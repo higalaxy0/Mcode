@@ -3,47 +3,47 @@ Mcode — Coding Agent
 
 ## 目录
 
-- [Mcode — Coding Agent 核心架构文档](#mcode--coding-agent-核心架构文档)
+- [Mcode — Coding Agent 核心架构文档](#mcode-coding-agent-核心架构文档)
   - [目录](#目录)
   - [项目总览](#项目总览)
   - [项目亮点](#项目亮点)
     - [1. 三级渐进式上下文压缩——拒绝"一刀切"的信息丢失](#1-三级渐进式上下文压缩拒绝一刀切的信息丢失)
     - [2. 全量工具清单与设计亮点](#2-全量工具清单与设计亮点)
-      - [文件系统与 Shell 工具（6 个，所有代理共享）](#文件系统与-shell-工具6-个所有代理共享)
+      - [文件系统与 Shell 工具（6 个，所有 agent 共享）](#文件系统与-shell-工具6-个所有-agent-共享)
       - [任务管理工具（5 个，仅 Lead）](#任务管理工具5-个仅-lead)
-      - [代理协作工具（6 个，仅 Lead）](#代理协作工具6-个仅-lead)
+      - [agent 协作工具（6 个，仅 Lead）](#agent-协作工具6-个仅-lead)
       - [知识工具（1 个，仅 Lead）](#知识工具1-个仅-lead)
       - [工具调度与注入机制](#工具调度与注入机制)
-    - [3. 文件总线 + 原子重命名——零依赖的跨线程通信](#3-文件总线--原子重命名零依赖的跨线程通信)
-    - [4. 多代理协作 + 协议状态机——结构化的"人机/机机"协作](#4-多代理协作--协议状态机结构化的人机机机协作)
-    - [5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#5-mcp-异步核心--同步门面让异步-sdk-无缝融入同步代码库)
+    - [3. 文件总线 + 原子重命名——零依赖的跨线程通信](#3-文件总线-原子重命名零依赖的跨线程通信)
+    - [4. 多 agent 协作 + 协议状态机——结构化的"人机/机机"协作](#4-多-agent-协作-协议状态机结构化的人机机机协作)
+    - [5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#5-mcp-异步核心-同步门面让异步-sdk-无缝融入同步代码库)
     - [6. 全链路防御性编程——"不崩溃"是底线](#6-全链路防御性编程不崩溃是底线)
-    - [7. 路径沙箱 + 命令拦截——双重安全屏障](#7-路径沙箱--命令拦截双重安全屏障)
+    - [7. 路径沙箱 + 命令拦截——双重安全屏障](#7-路径沙箱-命令拦截双重安全屏障)
     - [8. 后台线程记忆系统——"边聊边学"且零阻塞](#8-后台线程记忆系统边聊边学且零阻塞)
-    - [9. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#9-流式响应聚合--sdk-解耦不绑死-pydantic)
+    - [9. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#9-流式响应聚合-sdk-解耦不绑死-pydantic)
     - [10. 延迟导入打破循环依赖——包加载顺序无关](#10-延迟导入打破循环依赖包加载顺序无关)
   - [目录结构](#目录结构)
   - [架构总览](#架构总览)
   - [分层依赖关系](#分层依赖关系)
   - [模块详解](#模块详解)
     - [入口层 `mcode.py`](#入口层-mcodepy)
-    - [`config.py` — 配置中心](#configpy--配置中心)
-    - [`exceptions.py` — 异常定义](#exceptionspy--异常定义)
-    - [`context.py` — 全局运行时状态](#contextpy--全局运行时状态)
-    - [`utils.py` — 通用工具函数](#utilspy--通用工具函数)
-    - [`fsops.py` — 文件系统与 Shell 工具](#fsopspy--文件系统与-shell-工具)
-    - [`tasks.py` — 任务看板 CRUD](#taskspy--任务看板-crud)
-    - [`bus.py` — 消息总线与协议状态机](#buspy--消息总线与协议状态机)
-    - [`hooks.py` — 钩子系统](#hookspy--钩子系统)
-    - [`skills.py` — 技能注册表](#skillspy--技能注册表)
-    - [`memory.py` — 记忆系统](#memorypy--记忆系统)
-    - [`streaming.py` — 流式响应封装](#streamingpy--流式响应封装)
-    - [`compact.py` — Token 估算与上下文压缩](#compactpy--token-估算与上下文压缩)
-    - [`tools.py` — 工具定义与调度](#toolspy--工具定义与调度)
-    - [`mcp.py` — MCP 远程工具集成](#mcppy--mcp-远程工具集成)
-    - [`subagent.py` — 同步子代理](#subagentpy--同步子代理)
-    - [`teammates.py` — 线程化队友代理](#teammatespy--线程化队友代理)
-    - [`agent.py` — Lead Agent 主循环](#agentpy--lead-agent-主循环)
+    - [`config.py` — 配置中心](#configpy-配置中心)
+    - [`exceptions.py` — 异常定义](#exceptionspy-异常定义)
+    - [`context.py` — 全局运行时状态](#contextpy-全局运行时状态)
+    - [`utils.py` — 通用工具函数](#utilspy-通用工具函数)
+    - [`fsops.py` — 文件系统与 Shell 工具](#fsopspy-文件系统与-shell-工具)
+    - [`tasks.py` — 任务看板 CRUD](#taskspy-任务看板-crud)
+    - [`bus.py` — 消息总线与协议状态机](#buspy-消息总线与协议状态机)
+    - [`hooks.py` — 钩子系统](#hookspy-钩子系统)
+    - [`skills.py` — 技能注册表](#skillspy-技能注册表)
+    - [`memory.py` — 记忆系统](#memorypy-记忆系统)
+    - [`streaming.py` — 流式响应封装](#streamingpy-流式响应封装)
+    - [`compact.py` — Token 估算与上下文压缩](#compactpy-token-估算与上下文压缩)
+    - [`tools.py` — 工具定义与调度](#toolspy-工具定义与调度)
+    - [`mcp.py` — MCP 远程工具集成](#mcppy-mcp-远程工具集成)
+    - [`subagent.py` — 同步子 agent](#subagentpy-同步子-agent)
+    - [`teammates.py` — 线程化队友 agent](#teammatespy-线程化队友-agent)
+    - [`agent.py` — Lead Agent 主循环](#agentpy-lead-agent-主循环)
   - [关键设计决策](#关键设计决策)
     - [1. 配置 vs 状态分离](#1-配置-vs-状态分离)
     - [2. 延迟导入打破循环](#2-延迟导入打破循环)
@@ -51,7 +51,7 @@ Mcode — Coding Agent
     - [4. 三级渐进式压缩](#4-三级渐进式压缩)
     - [5. 文件总线而非内存队列](#5-文件总线而非内存队列)
     - [6. 薄 shim 保持兼容](#6-薄-shim-保持兼容)
-    - [7. MCP 异步核心 + 同步门面](#7-mcp-异步核心--同步门面)
+    - [7. MCP 异步核心 + 同步门面](#7-mcp-异步核心-同步门面)
 
 ---
 
@@ -63,8 +63,8 @@ Mcode — Coding Agent
 - **三级上下文压缩**：snip / micro / persist + LLM 摘要自动压缩 + 反应式压缩。
 - **记忆系统**：自动提取、检索、合并用户偏好/项目事实，注入对话。
 - **技能系统**：Markdown 技能文件热加载，按需检索。
-- **任务看板**：多代理协作的持久化任务依赖图。
-- **多代理协作**：同步子代理（subagent）+ 线程化队友代理（teammate）+ 消息总线 + 协议状态机。
+- **任务看板**：多 agent 协作的持久化任务依赖图。
+- **多 agent 协作**：同步子 agent（subagent）+ 线程化队友 agent（teammate）+ 消息总线 + 协议状态机。
 - **钩子系统**：UserPromptSubmit / PreToolUse / PostToolUse / Stop 四类生命周期钩子。
 - **MCP 集成**：通过 Model Context Protocol（Streamable HTTP 传输）连接外部工具服务器，自动发现并注入远程工具，全程容错。
 
@@ -102,7 +102,7 @@ if estimate_tokens_messages(api_messages) > CONTEXT_LIMIT:
 
 `tools.py` 汇总了 Lead Agent 的全部内置工具 schema + handler 映射。以下是完整工具清单，逐一说明参数与实现亮点。
 
-#### 文件系统与 Shell 工具（6 个，所有代理共享）
+#### 文件系统与 Shell 工具（6 个，所有 agent 共享）
 
 | 工具 | 必选参数 | 可选参数 | 设计亮点 |
 |------|----------|----------|----------|
@@ -124,11 +124,11 @@ if estimate_tokens_messages(api_messages) > CONTEXT_LIMIT:
 | **claim_task** | `task_id: str` | -- | 三重校验：status 必须为 pending、无 owner、`can_start` 检查所有 blockedBy 依赖已 completed；成功后 status -> in_progress 并记录 owner |
 | **complete_task** | `task_id: str` | -- | status 必须为 in_progress 才可完成；完成后自动扫描并报告新解锁的下游任务 |
 
-#### 代理协作工具（6 个，仅 Lead）
+#### agent 协作工具（6 个，仅 Lead）
 
 | 工具 | 必选参数 | 可选参数 | 设计亮点 |
 |------|----------|----------|----------|
-| **subagent** | `description: str` | -- | 同步阻塞子代理，最多 50 轮；仅用 6 个基础工具（无协作能力，防递归失控）；返回最终摘要文本；自带超时重试 |
+| **subagent** | `description: str` | -- | 同步阻塞子 agent，最多 50 轮；仅用 6 个基础工具（无协作能力，防递归失控）；返回最终摘要文本；自带超时重试 |
 | **spawn_teammate** | `name: str`, `role: str`, `prompt: str` | -- | 后台 daemon 线程异步运行；`name` 唯一性校验（已存在则拒绝）；自动注入记忆索引；全程团队历史日志 `.team_history/<name>.jsonl`；MCP 工具自动注入到队友工具集 |
 | **send_message** | `to: str`, `content: str` | -- | 通过文件总线投递到目标 agent 的 `.mailboxes/<name>.jsonl`；实时终端日志 |
 | **check_inbox** | `include_read: bool` | -- | 原子 rename 读取后清空收件箱；自动路由 `*_response` 协议消息到状态机 `match_response`；字符串 `"true"`/`"false"` 自动转 bool |
@@ -160,11 +160,11 @@ trigger_hooks("PostToolUse", tool_call.function, output)     # 5. 后置钩子
 
 **延迟填充**：`TOOL_HANDLERS` 中 `subagent`/`load_skill`/`send_message` 等跨层依赖槽位初始为 `None`，由 `_fill_delayed_handlers()` 在包加载末尾统一导入填充，打破 `tools -> subagent/skills/bus` 的循环依赖。
 
-**MCP 动态注入**：`_inject_mcp_tools()` 在 `agent.main()` 启动阶段调用，将所有已连接 MCP 服务器的远程工具 schema 追加到 `TOOLS`/`SUB_TOOLS`，handler 注册到 `TOOL_HANDLERS`/`SUB_HANDLERS`。重名工具跳过并告警；未连接 MCP 时为 no-op。远程工具名加 `mcp__{server}__{tool}` 前缀防冲突，外部能力对 Lead 和子代理均透明可用。
+**MCP 动态注入**：`_inject_mcp_tools()` 在 `agent.main()` 启动阶段调用，将所有已连接 MCP 服务器的远程工具 schema 追加到 `TOOLS`/`SUB_TOOLS`，handler 注册到 `TOOL_HANDLERS`/`SUB_HANDLERS`。重名工具跳过并告警；未连接 MCP 时为 no-op。远程工具名加 `mcp__{server}__{tool}` 前缀防冲突，外部能力对 Lead 和子 agent 均透明可用。
 
 ### 3. 文件总线 + 原子重命名——零依赖的跨线程通信
 
-多代理协作需要消息传递。Mcode 没有引入 Redis/RabbitMQ 等外部中间件，而是用 **JSONL 文件 + 原子 rename** 实现了进程内消息总线：
+多 agent 协作需要消息传递。Mcode 没有引入 Redis/RabbitMQ 等外部中间件，而是用 **JSONL 文件 + 原子 rename** 实现了进程内消息总线：
 
 ```python
 def read_inbox(self, agent: str) -> list[dict]:
@@ -180,9 +180,9 @@ def read_inbox(self, agent: str) -> list[dict]:
 
 `rename()` 在同一文件系统上是原子的，配合类级 `_read_counter` + `_read_lock` 保证临时文件名唯一，从根本上避免多个队友线程同时读同一收件箱导致的消息丢失或重复。消息天然持久化到磁盘，可事后审计，重启不丢。
 
-### 4. 多代理协作 + 协议状态机——结构化的"人机/机机"协作
+### 4. 多 agent 协作 + 协议状态机——结构化的"人机/机机"协作
 
-Mcode 构建了 **Lead → Subagent → Teammate** 三级代理体系，辅以**任务看板依赖图**和**请求/响应协议状态机**，实现真正的多代理工程协作：
+Mcode 构建了 **Lead → Subagent → Teammate** 三级 agent 体系，辅以**任务看板依赖图**和**请求/响应协议状态机**，实现真正的多 agent 工程协作：
 
 ```
 Lead Agent (主线程 REPL)
@@ -295,8 +295,8 @@ src/
 │   ├── compact.py        # Token 估算 + 三级压缩 + 自动/反应式压缩
 │   ├── tools.py          # 工具 schema + handler 映射 + system prompt
 │   ├── mcp.py            # MCP 客户端（Streamable HTTP，异步核心+同步门面）
-│   ├── subagent.py       # 同步子代理
-│   ├── teammates.py      # 线程化队友代理
+│   ├── subagent.py       # 同步子 agent
+│   ├── teammates.py      # 线程化队友 agent
 │   └── agent.py          # Lead Agent 主循环 + REPL 入口
 │
 │
@@ -349,7 +349,7 @@ src/
 
         ┌────────────┐         ┌──────────────┐
         │ subagent   │         │  teammates   │  ◄── 线程化，通过 bus 通信
-        │ (同步子代理)│         │ (队友代理)    │
+        │ (同步子 agent)│         │ (队友 agent)    │
         └────────────┘         └──────────────┘
 ```
 
@@ -367,7 +367,7 @@ src/
 | **L3 状态/通信** | `context`, `bus`, `hooks` | 运行时状态与消息总线，依赖 L2 |
 | **L4 记忆/流式/压缩** | `memory`, `streaming`, `compact` | 高级能力，依赖 L0-L3 |
 | **L5 工具表** | `tools`, `mcp` | schema+handler 汇总；MCP 远程工具发现/调用，依赖 L2-L4 |
-| **L6 代理** | `subagent`, `teammates`, `agent` | 顶层循环，依赖全部下层 |
+| **L6 agent** | `subagent`, `teammates`, `agent` | 顶层循环，依赖全部下层 |
 
 > `context.bus` 属性采用**惰性创建**（首次访问才 import `bus.MessageBus`），避免 `context ↔ bus` 循环。
 
@@ -593,7 +593,7 @@ ctx._mcp_manager         # MCPManager（惰性创建，见 .mcp 属性）
 
 **System Prompt**：
 - `build_system()`：Lead system prompt（含工作目录、技能目录、记忆索引、OS 提示、记忆注入说明）。
-- `SUB_SYSTEM`：子代理 system prompt。
+- `SUB_SYSTEM`：子 agent system prompt。
 
 **工具集分层**：
 
@@ -660,9 +660,9 @@ MCPManager  (同步门面，主线程)
 
 ---
 
-### `subagent.py` — 同步子代理
+### `subagent.py` — 同步子 agent
 
-`spawn_subagent(description)`：**同步阻塞**的子代理，处理复杂子任务后返回最终摘要。
+`spawn_subagent(description)`：**同步阻塞**的子 agent，处理复杂子任务后返回最终摘要。
 
 - 最多 50 轮循环。
 - 仅用 6 个基础工具（`SUB_TOOLS` / `SUB_HANDLERS`）。
@@ -674,7 +674,7 @@ MCPManager  (同步门面，主线程)
 
 ---
 
-### `teammates.py` — 线程化队友代理
+### `teammates.py` — 线程化队友 agent
 
 `spawn_teammate_thread(name, role, prompt)`：**后台线程**运行的自治队友。
 
@@ -753,3 +753,4 @@ L1 snip（截断中间轮）→ L2 micro（占位旧 tool_result）→ L3 persis
 
 ### 7. MCP 异步核心 + 同步门面
 MCP SDK 为异步，但整个 codebase 同步。`MCPClient` 在专用 daemon 线程跑独立事件循环，通过 `run_coroutine_threadsafe` 桥接，使 `ClientSession` 跨多次调用存活且主线程零 async 样板。工具名加 `mcp__{server}__{tool}` 前缀防冲突；整个子系统容错——配置缺失、JSON 损坏、连接或调用失败均降级为 no-op，绝不影响主程序启动。
+
