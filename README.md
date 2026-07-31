@@ -57,7 +57,7 @@ Mcode — Coding Agent
 
 ## 项目总览
 
-`Mcode` 是一个基于 OpenAI 兼容 API的命令行编码 Agent。它支持：
+`Mcode` 是一个基于 OpenAI SDK的命令行编码 Agent。它支持：
 
 - **流式对话 + 工具调用**：实时输出，自动执行工具循环。
 - **三级上下文压缩**：snip / micro / persist + LLM 摘要自动压缩 + 反应式压缩。
@@ -72,7 +72,7 @@ Mcode — Coding Agent
 
 ## 项目亮点
 
-以下亮点提炼自项目源码，体现 Mcode 在工程实现上的关键设计思考与技术深度。
+以下亮点体现 Mcode 在工程实现上的关键设计思考与技术深度。
 
 ### 1. 三级渐进式上下文压缩——拒绝"一刀切"的信息丢失
 
