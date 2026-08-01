@@ -210,6 +210,18 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                           "error": truncate(str(e))}, TEAM_HISTORY_DIR)
                         ctx.bus.send(name, "lead", f"[teammate] {name} LLM call failed: "f"{type(e).__name__}: {e}", "LLM API error")
                         return
+                    # Guard against empty ``choices`` (content-filter / rate-limit
+                    # soft-fail): some providers return HTTP 200 with ``choices=[]``.
+                    # Without this guard ``choices[0]`` raises ``IndexError`` which
+                    # would escape the outer try as a silent crash (P5c).
+                    if not response.choices:
+                        log_team_history(name, "llm_response",
+                                         {"content": "",
+                                          "tool_calls": "",
+                                          "finish_reason": "empty_choices"},
+                                         TEAM_HISTORY_DIR)
+                        messages.append({"role": "assistant", "content": ""})
+                        break
                     assistant_message = response.choices[0].message
                     log_team_history(name, "llm_response",
                                      {
@@ -225,14 +237,39 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                         break
                     for tool_call in (assistant_message.tool_calls or []):
                         if response.choices[0].finish_reason == "tool_calls":
-                            blocked = trigger_hooks("PreToolUse", tool_call.function)
+                            # PreToolUse hook runs user-supplied code; wrap it so
+                            # a buggy/malicious hook crashes the hook (gracefully
+                            # degrades to "not blocked") instead of the teammate.
+                            blocked = None
+                            try:
+                                blocked = trigger_hooks("PreToolUse", tool_call.function)
+                            except Exception as _hook_err:
+                                print(f"  \033[33m[teammate] {name} PreToolUse hook "
+                                      f"error ({_hook_err}), skipping hook\033[0m")
+                                log_team_history(name, "hook_error",
+                                                 {"phase": "PreToolUse",
+                                                  "tool": tool_call.function.name,
+                                                  "error": truncate(str(_hook_err))},
+                                                 TEAM_HISTORY_DIR)
                             if blocked:
                                 messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": str(blocked)})
                                 continue
                             handler = sub_handlers.get(tool_call.function.name)
                             args = parse_tool_args(tool_call.function.arguments)
                             output = handler(**args) if handler else f"Unknown tool: {tool_call.function.name}"
-                            trigger_hooks("PostToolUse", tool_call.function, output)
+                            # PostToolUse hook likewise wrapped: the tool already
+                            # ran successfully, a hook crash must not discard the
+                            # result or kill the teammate.
+                            try:
+                                trigger_hooks("PostToolUse", tool_call.function, output)
+                            except Exception as _hook_err:
+                                print(f"  \033[33m[teammate] {name} PostToolUse hook "
+                                      f"error ({_hook_err}), skipping hook\033[0m")
+                                log_team_history(name, "hook_error",
+                                                 {"phase": "PostToolUse",
+                                                  "tool": tool_call.function.name,
+                                                  "error": truncate(str(_hook_err))},
+                                                 TEAM_HISTORY_DIR)
                             log_team_history(name, "tool_called",
                                              {"tool": tool_call.function.name,
                                               "args": truncate(json.dumps(args, ensure_ascii=False)),
@@ -257,18 +294,48 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 if not result:
                     result = "teamagent stopped after 50 turns without final answer."
             ctx.bus.send(name, "lead", result, "result")
+        except Exception as e:
+            # Catch-all for the "protection blind spot": any exception that
+            # escapes the inner LLM try/except (tool handler crash, parse
+            # failure, idle_poll I/O error, etc.) lands here.  Without this
+            # the teammate would exit silently with an empty lead mailbox.
+            # We send a ``crashed`` notification so the lead always learns.
+            crash_msg = (f"[teammate] {name} crashed: "
+                         f"{type(e).__name__}: {e}")
+            try:
+                ctx.bus.send(name, "lead", crash_msg, "crashed")
+            except Exception:
+                pass  # best-effort; finally still sets the event
+            log_team_history(name, "crashed",
+                             {"error_type": type(e).__name__,
+                              "error": truncate(str(e))}, TEAM_HISTORY_DIR)
+            print(f"  \033[31m[teammate] {name} crashed: "
+                  f"{type(e).__name__}: {e}\033[0m")
         finally:
+            # Fix 1: Set the event and mark registry status FIRST, before
+            # any logging that might itself raise.  Previously
+            # log_team_history() ran before evt.set(), so a logging failure
+            # (e.g. json.dumps on non-serializable data) would leave the
+            # event UNSET and status "running" forever - lead loses BOTH
+            # notification channels.  Now the event/status are guaranteed.
             try:
                 _final = result
-            except NameError:
+            except (NameError, UnboundLocalError):
                 _final = ""
-            log_team_history(name, "finished",
-                             {"result": truncate(_final), "idle_result": idle_result}, TEAM_HISTORY_DIR)
             evt = ctx.active_teammates.get(name)
             if evt is not None:
                 evt.set()
             if name in ctx.teammate_registry:
                 ctx.teammate_registry[name]["status"] = "finished"
+            # Logging is best-effort: never let it prevent the print or
+            # mask the real exit.  Wrapped so a serialisation error here
+            # cannot resurrect a "looks alive" teammate.
+            try:
+                log_team_history(name, "finished",
+                                 {"result": truncate(_final), "idle_result": idle_result}, TEAM_HISTORY_DIR)
+            except Exception as _log_err:
+                print(f"  \033[33m[teammate] {name} history log failed: "
+                      f"{_log_err}\033[0m")
             print(f"  \033[32m[teammate] {name} finished\033[0m")
 
     ctx.active_teammates[name] = threading.Event()

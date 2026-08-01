@@ -18,11 +18,19 @@ class MessageBus:
     """In-process message bus backed by JSONL files.
 
     Each agent owns a ``.mailboxes/<name>.jsonl`` inbox.
-    ``read_inbox`` uses atomic rename to avoid concurrent duplicate reads.
+
+    Thread-safety:
+      - ``send`` uses a global write lock so that concurrent appends
+        to the *same* inbox file are serialised.  Without this, on
+        Windows ``open(path, "a")`` is **not** atomic and concurrent
+        writes can lose data or corrupt JSON lines.
+      - ``read_inbox`` uses atomic rename to avoid concurrent duplicate
+        reads.
     """
 
     _read_counter = 0
     _read_lock = threading.Lock()
+    _write_lock = threading.Lock()
 
     def send(self, from_agent: str, to_agent: str, content: str,
              msg_type: str = "message", metadata: dict = None) -> None:
@@ -31,29 +39,46 @@ class MessageBus:
                "content": content, "type": msg_type,
                "ts": time.time(), "metadata": metadata or {}}
         inbox = MAILBOX_DIR / f"{to_agent}.jsonl"
-        with open(inbox, "a", encoding="utf-8") as f:
-            f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+        line = json.dumps(msg, ensure_ascii=False) + "\n"
+        with self._write_lock:
+            with open(inbox, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
         print(f" \033[33m[bus] {from_agent} -> {to_agent}: "
               f"({msg_type}) {content[:50]}\033[0m")
 
     def read_inbox(self, agent: str) -> list[dict]:
-        """Read and clear *agent*'s inbox (atomic rename)."""
+        """Read and clear *agent*'s inbox (atomic rename).
+
+        The rename is performed under ``_write_lock`` so that no
+        concurrent ``send`` has the inbox file open (on Windows,
+        renaming a file that another thread has open fails with
+        ``WinError 32``).
+        """
         inbox = MAILBOX_DIR / f"{agent}.jsonl"
         if not inbox.exists():
             return []
         with self._read_lock:
             self._read_counter += 1
             tmp = MAILBOX_DIR / f"{agent}.jsonl.reading_{self._read_counter}"
-        try:
-            inbox.rename(tmp)
-        except FileNotFoundError:
-            return []
-        except Exception as e:
-            print(f"  \033[31m[bus] read_inbox rename failed for "
-                  f"{agent}: {e}\033[0m")
-            return []
-        msgs = [json.loads(line) for line in tmp.read_text(encoding="utf-8").splitlines()
-                if line.strip()]
+        with self._write_lock:
+            try:
+                inbox.rename(tmp)
+            except FileNotFoundError:
+                return []
+            except Exception as e:
+                print(f"  \033[31m[bus] read_inbox rename failed for "
+                      f"{agent}: {e}\033[0m")
+                return []
+        msgs = []
+        for line in tmp.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                msgs.append(json.loads(line))
+            except json.JSONDecodeError:
+                print(f"  \033[31m[bus] read_inbox: skipped corrupted "
+                      f"line for {agent}\033[0m")
         try:
             tmp.unlink()
         except FileNotFoundError:
