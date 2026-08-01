@@ -74,15 +74,53 @@ def group_turns(messages: list) -> list[list]:
 
 
 def _strip_orphan_tail(msgs: list) -> list:
-    """Remove trailing orphan tool messages and dangling tool_calls."""
-    while msgs and msgs[-1].get("role") == "tool":
-        msgs.pop()
+    """Remove trailing orphan tool messages and dangling tool_calls.
+
+    Two cases to clean (only at the *tail* boundary, which is where a cut can
+    land mid-execution):
+
+    1. *dangling tool_calls* -- an assistant message carrying ``tool_calls``
+       whose results never arrived.  These are stripped (``tool_calls``
+       removed, content replaced with a placeholder) so the LLM does not try
+       to continue a tool call that will never get a result.
+
+    2. *orphan tool messages* -- ``role == "tool"`` messages with no matching
+       ``tool_call_id`` in any preceding assistant message.  These are
+       removed.
+
+    Crucially, a **valid** trailing ``assistant(tool_calls) -> tool(result)``
+    pair is *preserved*: the tool result is the answer the agent just received
+    and must not be dropped.
+    """
+    # 1) Strip trailing dangling tool_calls first.  A dangling tool_call is
+    #    always the last message (the result has not arrived yet), so one
+    #    pass suffices.  After stripping its tool_calls the assistant message
+    #    becomes plain text and any orphan tool messages that followed it are
+    #    exposed for step 2.
     while msgs and _has_tool_calls(msgs[-1]):
         last = msgs[-1]
         content = last.get("content") or "[tool calls without results were dropped]"
         msgs[-1] = {"role": "assistant", "content": content}
-        while msgs and msgs[-1].get("role") == "tool":
-            msgs.pop()
+
+    # 2) Strip trailing *orphan* tool messages (no matching tool_call_id in
+    #    the nearest preceding assistant tool_calls block).  A tool message
+    #    that *does* match a preceding assistant block is a legitimate result
+    #    and must be kept -- stop immediately.
+    while msgs and msgs[-1].get("role") == "tool":
+        tid = msgs[-1].get("tool_call_id")
+        # Walk backwards to the nearest assistant-with-tool_calls message and
+        # check whether it issued this tool_call_id.
+        has_caller = False
+        for j in range(len(msgs) - 2, -1, -1):
+            if msgs[j].get("role") != "assistant":
+                continue
+            if _has_tool_calls(msgs[j]):
+                tids = {tc["id"] for tc in msgs[j]["tool_calls"]}
+                has_caller = tid in tids
+            break  # nearest assistant block (tool_calls or plain text)
+        if has_caller:
+            break  # legitimate pair -- preserve everything from here on
+        msgs.pop()
     return msgs
 
 
@@ -109,37 +147,180 @@ def _strip_orphan_head(msgs: list) -> list:
     return msgs
 
 
-def snip_compact(messages: list, min_keep_turns: int = 25) -> list:
-    """L1 compaction: keep head 1 turn + tail N turns, replacing the middle with a placeholder."""
+def _is_snip_marker(msg) -> bool:
+    """Whether the message is a stale snip placeholder inserted by a previous snip_compact run."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    return isinstance(content, str) and content.startswith("[snipped")
+
+
+def _strip_snip_markers(messages: list) -> list:
+    """Remove stale snip placeholders so they don't accumulate across repeated snip runs.
+
+    A previous snip inserts a ``[snipped N conversation turns]`` user message as the
+    boundary between head and tail. On the next snip the group logic merges this marker
+    into the first turn (since it carries no tool_calls), so the old marker survives into
+    the new head and stacks up one per run. Stripping them up front keeps head stable.
+    Returns the original list unchanged when there is nothing to strip (preserves identity
+    for the no-op fast path).
+    """
+    if not any(_is_snip_marker(m) for m in messages):
+        return messages
+    return [m for m in messages if not _is_snip_marker(m)]
+
+
+def _is_task_anchor(msg) -> bool:
+    """Whether *msg* is a genuine user task prompt worth pinning across snips.
+
+    Excludes synthetic/injected user messages (system-generated placeholders that
+    start with ``[``) and the interruption sentinel, so only real task inputs
+    survive as pinned anchors.
+    """
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return False
+    if content.startswith("["):   # [Inbox] / [snipped ...] / [Compacted] / [Reactive compact] ...
+        return False
+    if content == "interrupted by user":
+        return False
+    return True
+
+
+def _build_snipped_activity_summary(messages: list) -> str:
+    """Build a lightweight summary of the snipped-away region (no LLM needed).
+
+    Used as a fallback when ``_build_post_compact_context`` returns an empty
+    block (no known files / todos / tasks / teammates), so the placeholder
+    still carries *what kind of work* was done in the dropped turns rather
+    than being a bare ``[snipped N turns]``.
+
+    Extracts:
+      * tool-call type distribution (e.g. "25× edit_file, 3× bash")
+      * last assistant text message in the region (if any)
+      * truncated user prompts in the region
+    """
+    tool_names: dict[str, int] = {}
+    last_asst_text = ""
+    user_snippets: list[str] = []
+    for m in messages:
+        role = m.get("role")
+        if role == "assistant":
+            tcs = m.get("tool_calls") or []
+            for tc in tcs:
+                name = (tc.get("function", {}) or {}).get("name", "?")
+                tool_names[name] = tool_names.get(name, 0) + 1
+            content = m.get("content")
+            if isinstance(content, str) and content.strip():
+                last_asst_text = content.strip()
+        elif role == "user" and _is_task_anchor(m):
+            text = (m.get("content") or "").strip()
+            if text and not text.startswith("["):
+                user_snippets.append(text[:80])
+    lines = []
+    if tool_names:
+        stats = ", ".join(f"{c}× {n}" for n, c in tool_names.items())
+        lines.append(f"Snipped activity: {stats}")
+    if user_snippets:
+        shown = user_snippets[:5]
+        more = f" (+{len(user_snippets)-5} more)" if len(user_snippets) > 5 else ""
+        lines.append("Snipped task prompts: " + " | ".join(shown) + more)
+    if last_asst_text:
+        lines.append(f"Last note before snip: {last_asst_text[:200]}")
+    return "\n".join(lines)
+
+
+def snip_compact(messages: list, min_keep_turns: int = 50) -> list:
+    """L1 sliding-window compaction.
+
+    Keeps every genuine user task prompt (pinned, in order) so the agent never
+    forgets what tasks were issued; keeps the most recent ``min_keep_turns``
+    turns as the active working window; and replaces everything in between with
+    a single placeholder carrying a rebuilt context block (recent files /
+    todolist / task board / teammates).
+
+    Layered window relationship (OPT-4 scheme B):
+        snip_compact keeps ``min_keep_turns`` (default 50) turns of *recent
+        conversational context* -- including assistant reasoning, tool_calls
+        and their results -- so the agent can still look back at recent
+        exchanges.  However only the most recent ``KEEP_RECENT_LOOP_TURN``
+        (default 25) turns retain *full tool_result contents*; the older half
+        of the snip window has its bulky tool outputs replaced with
+        placeholders by :func:`micro_compact` (L2).  The two constants are
+        intentionally *decoupled*: ``min_keep_turns`` governs the breadth of
+        the active window (how much history is structurally retained), while
+        ``KEEP_RECENT_LOOP_TURN`` governs the depth of verbatim data within
+        that window (how much tool output survives unmodified).
+    """
+    messages = _strip_snip_markers(messages)
     turns = group_turns(messages)
     if len(turns) <= min_keep_turns + 1:
         return messages
 
-    keep_head_turns = 1
     keep_tail_turns = min_keep_turns
-
-    head = turns[:keep_head_turns]
     tail = turns[-keep_tail_turns:]
+    # index of the first message belonging to the tail window
+    tail_start = sum(len(t) for t in turns[:-keep_tail_turns])
 
-    head_flat = [m for t in head for m in t]
-    tail_flat = [m for t in tail for m in t]
+    # 1) pinned: genuine user task prompts *before* the tail window (task
+    #    identity).  Capped so that long multi-task sessions don't let the
+    #    pinned block grow without bound: when the cap is exceeded the oldest
+    #    prompts are collapsed into a single terse summary line.
+    PIN_CAP = 10
+    pinned = [m for m in messages[:tail_start] if _is_task_anchor(m)]
+    if len(pinned) > PIN_CAP:
+        old = pinned[:-PIN_CAP]
+        recent = pinned[-PIN_CAP:]
+        old_summary = "; ".join((p.get("content") or "")[:60] for p in old)
+        pinned = [{"role": "user",
+                   "content": f"[Earlier tasks: {old_summary}]"}] + recent
 
-    head_flat = _strip_orphan_tail(head_flat)
-    tail_flat = _strip_orphan_head(tail_flat)
+    # 2) rebuilt context block (no LLM): recent files / todos / tasks /
+    #    teammates.  When all three are empty (e.g. a pure bash session with
+    #    no file ops / todos / tasks), fall back to a lightweight activity
+    #    summary extracted from the snipped-away region so the placeholder
+    #    still tells the agent *what kind of work* was done.
+    snipped_turns = len(turns) - keep_tail_turns
+    context_block = _build_post_compact_context(messages)
+    # The activity summary (tool distribution / last note / task prompts in
+    # the dropped region) is *complementary* to the context block (which only
+    # carries recent-files / todos / tasks / teammates), so always generate it
+    # and append rather than treating the two as mutually exclusive.
+    activity = _build_snipped_activity_summary(messages[:tail_start])
+    if activity:
+        context_block = (context_block + "\n\n" + activity) if context_block else activity
+    placeholder_content = f"[snipped {snipped_turns} conversation turns]"
+    if context_block:
+        placeholder_content += f"\n{context_block}"
 
-    snipped_turns = len(turns) - keep_head_turns - keep_tail_turns
-    print(f"snip_compact: kept head 1 + tail {keep_tail_turns}, "
-          f"snipped {snipped_turns} turns (total {len(turns)})")
-    result = (
-        head_flat
-        + [{"role": "user", "content": f"[snipped {snipped_turns} conversation turns]"}]
-        + tail_flat
-    )
+    # 3) tail sliding window (active working area), orphan-cleaned at both
+    #    ends: head (unanswered tool_calls / orphan tool msgs from the cut
+    #    boundary) and tail (dangling tool_calls when the conversation was
+    #    interrupted mid-execution).
+    tail_flat = _strip_orphan_tail(_strip_orphan_head([m for t in tail for m in t]))
+
+    print(f"snip_compact: pinned {len(pinned)} task prompts, kept tail "
+          f"{keep_tail_turns} turns, snipped {snipped_turns} turns (total {len(turns)})")
+    result = pinned + [{"role": "user", "content": placeholder_content}] + tail_flat
     return ensure_valid_start(result)
 
 
 def micro_compact(messages: list) -> list:
-    """L2 compaction: replace old tool_result contents with placeholders, keeping the most recent N turns."""
+    """L2 compaction: replace old tool_result contents with placeholders, keeping the most recent N turns.
+
+    Layered window relationship (OPT-4 scheme B):
+        Only the most recent ``KEEP_RECENT_LOOP_TURN`` (default 25) turns keep
+        their full tool_result contents.  Older turns within the active window
+        have tool outputs replaced with lightweight placeholders, trimming bulk
+        while preserving the turn structure (assistant reasoning + tool_calls).
+        This is intentionally smaller than snip_compact's ``min_keep_turns``
+        (default 50): snip governs *breadth* of the retained window, micro
+        governs *depth* of verbatim tool data within that window.  Together
+        they form a two-tier active area: the inner 25 turns are fully
+        detailed, the outer 25 turns are structurally present but data-light.
+    """
     turns = group_turns(messages)
     turn_starts = []
     offset = 0
