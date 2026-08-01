@@ -3,7 +3,7 @@ Mcode — Coding Agent
 
 ## 目录
 
-- [Mcode — Coding Agent 核心架构文档](#mcode-coding-agent-核心架构文档)
+- [Mcode — Coding Agent 核心架构文档](#mcode--coding-agent-核心架构文档)
   - [目录](#目录)
   - [项目总览](#项目总览)
   - [项目亮点](#项目亮点)
@@ -14,36 +14,36 @@ Mcode — Coding Agent
       - [agent 协作工具（6 个，仅 Lead）](#agent-协作工具6-个仅-lead)
       - [知识工具（1 个，仅 Lead）](#知识工具1-个仅-lead)
       - [工具调度与注入机制](#工具调度与注入机制)
-    - [3. 文件总线 + 原子重命名——零依赖的跨线程通信](#3-文件总线-原子重命名零依赖的跨线程通信)
-    - [4. 多 agent 协作 + 协议状态机——结构化的"人机/机机"协作](#4-多-agent-协作-协议状态机结构化的人机机机协作)
-    - [5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#5-mcp-异步核心-同步门面让异步-sdk-无缝融入同步代码库)
+    - [3. 文件总线 + 原子重命名——零依赖的跨线程通信](#3-文件总线--原子重命名零依赖的跨线程通信)
+    - [4. 多 agent 协作 + 协议状态机——结构化的"人机/机机"协作](#4-多-agent-协作--协议状态机结构化的人机机机协作)
+    - [5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#5-mcp-异步核心--同步门面让异步-sdk-无缝融入同步代码库)
     - [6. 全链路防御性编程——"不崩溃"是底线](#6-全链路防御性编程不崩溃是底线)
-    - [7. 路径沙箱 + 命令拦截——双重安全屏障](#7-路径沙箱-命令拦截双重安全屏障)
+    - [7. 路径沙箱 + 命令拦截——双重安全屏障](#7-路径沙箱--命令拦截双重安全屏障)
     - [8. 后台线程记忆系统——"边聊边学"且零阻塞](#8-后台线程记忆系统边聊边学且零阻塞)
-    - [9. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#9-流式响应聚合-sdk-解耦不绑死-pydantic)
+    - [9. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#9-流式响应聚合--sdk-解耦不绑死-pydantic)
     - [10. 延迟导入打破循环依赖——包加载顺序无关](#10-延迟导入打破循环依赖包加载顺序无关)
   - [目录结构](#目录结构)
   - [架构总览](#架构总览)
   - [分层依赖关系](#分层依赖关系)
   - [模块详解](#模块详解)
     - [入口层 `mcode.py`](#入口层-mcodepy)
-    - [`config.py` — 配置中心](#configpy-配置中心)
-    - [`exceptions.py` — 异常定义](#exceptionspy-异常定义)
-    - [`context.py` — 全局运行时状态](#contextpy-全局运行时状态)
-    - [`utils.py` — 通用工具函数](#utilspy-通用工具函数)
-    - [`fsops.py` — 文件系统与 Shell 工具](#fsopspy-文件系统与-shell-工具)
-    - [`tasks.py` — 任务看板 CRUD](#taskspy-任务看板-crud)
-    - [`bus.py` — 消息总线与协议状态机](#buspy-消息总线与协议状态机)
-    - [`hooks.py` — 钩子系统](#hookspy-钩子系统)
-    - [`skills.py` — 技能注册表](#skillspy-技能注册表)
-    - [`memory.py` — 记忆系统](#memorypy-记忆系统)
-    - [`streaming.py` — 流式响应封装](#streamingpy-流式响应封装)
-    - [`compact.py` — Token 估算与上下文压缩](#compactpy-token-估算与上下文压缩)
-    - [`tools.py` — 工具定义与调度](#toolspy-工具定义与调度)
-    - [`mcp.py` — MCP 远程工具集成](#mcppy-mcp-远程工具集成)
-    - [`subagent.py` — 同步子 agent](#subagentpy-同步子-agent)
-    - [`teammates.py` — 线程化队友 agent](#teammatespy-线程化队友-agent)
-    - [`agent.py` — Lead Agent 主循环](#agentpy-lead-agent-主循环)
+    - [`config.py` — 配置中心](#configpy--配置中心)
+    - [`exceptions.py` — 异常定义](#exceptionspy--异常定义)
+    - [`context.py` — 全局运行时状态](#contextpy--全局运行时状态)
+    - [`utils.py` — 通用工具函数](#utilspy--通用工具函数)
+    - [`fsops.py` — 文件系统与 Shell 工具](#fsopspy--文件系统与-shell-工具)
+    - [`tasks.py` — 任务看板 CRUD](#taskspy--任务看板-crud)
+    - [`bus.py` — 消息总线与协议状态机](#buspy--消息总线与协议状态机)
+    - [`hooks.py` — 钩子系统](#hookspy--钩子系统)
+    - [`skills.py` — 技能注册表](#skillspy--技能注册表)
+    - [`memory.py` — 记忆系统](#memorypy--记忆系统)
+    - [`streaming.py` — 流式响应封装](#streamingpy--流式响应封装)
+    - [`compact.py` — Token 估算与上下文压缩](#compactpy--token-估算与上下文压缩)
+    - [`tools.py` — 工具定义与调度](#toolspy--工具定义与调度)
+    - [`mcp.py` — MCP 远程工具集成](#mcppy--mcp-远程工具集成)
+    - [`subagent.py` — 同步子 agent](#subagentpy--同步子-agent)
+    - [`teammates.py` — 线程化队友 agent](#teammatespy--线程化队友-agent)
+    - [`agent.py` — Lead Agent 主循环](#agentpy--lead-agent-主循环)
   - [关键设计决策](#关键设计决策)
     - [1. 配置 vs 状态分离](#1-配置-vs-状态分离)
     - [2. 延迟导入打破循环](#2-延迟导入打破循环)
@@ -51,13 +51,17 @@ Mcode — Coding Agent
     - [4. 三级渐进式压缩](#4-三级渐进式压缩)
     - [5. 文件总线而非内存队列](#5-文件总线而非内存队列)
     - [6. 薄 shim 保持兼容](#6-薄-shim-保持兼容)
-    - [7. MCP 异步核心 + 同步门面](#7-mcp-异步核心-同步门面)
+    - [7. MCP 异步核心 + 同步门面](#7-mcp-异步核心--同步门面)
+    - [8. 记忆时效性管理](#8-记忆时效性管理)
+    - [9. 确定性去重](#9-确定性去重)
+    - [10. 记忆原子合并](#10-记忆原子合并)
+    - [11. JSON 截断容错](#11-json-截断容错)
 
 ---
 
 ## 项目总览
 
-`Mcode` 是一个基于 OpenAI SDK的命令行编码 Agent。它支持：
+`Mcode` 是一个基于 OpenAI 兼容 API的命令行编码 Agent。它支持：
 
 - **流式对话 + 工具调用**：实时输出，自动执行工具循环。
 - **三级上下文压缩**：snip / micro / persist + LLM 摘要自动压缩 + 反应式压缩。
@@ -80,10 +84,14 @@ Mcode — Coding Agent
 
 | 层级 | 机制 | 触发条件 | 代价 |
 |------|------|----------|------|
-| **L1 Snip** | 保留头 1 轮 + 尾 N 轮，中间替换为 `[snipped X turns]` 占位 | 对话轮数 > 26 | 极低（纯内存） |
-| **L2 Micro** | 旧轮次的 `tool_result` 内容替换为占位，保留最近 25 轮完整 | 有 > 25 个含工具调用的轮次 | 低（纯内存） |
+| **L1 Snip** | Pin 全部真实用户任务提示 + 保留尾部 50 轮活跃窗口，中间替换为 `[snipped X turns]` 占位（含重建上下文块 + 活动摘要） | 对话轮数 > 51（`min_keep_turns + 1`） | 极低（纯内存） |
+| **L2 Micro** | 旧轮次中 `len > 120` 的 `tool_result` 内容替换为占位，保留最近 25 轮完整 | 含工具调用的轮次 > 25（`KEEP_RECENT_LOOP_TURN`） | 低（纯内存） |
 | **L3 Persist** | 超 30KB 的单条工具输出落盘 `.task_outputs/`，返回预览占位 | 单轮工具输出 > 200KB | 中（磁盘 IO） |
 | **L4 Auto/Reactive** | 落盘完整 transcript → LLM 摘要 → 重建上下文块 | 估算 token 超 `CONTEXT_LIMIT` 或 API 报 `prompt_too_long` | 高（一次 LLM 调用） |
+
+> **两级窗口解耦**：L1 的 `min_keep_turns`（默认 50）管**广度**--结构上保留多少轮历史；L2 的 `KEEP_RECENT_LOOP_TURN`（默认 25）管**深度**--这些轮次中多少工具输出保持原文。两者故意解耦，形成两层活跃区：内层 25 轮全量明细，外层 25 轮结构保留但数据精简。
+
+> **L1 Pin 机制**：`_is_task_anchor` 识别真实用户任务提示（排除 `[...]` 前缀的合成消息和 `"interrupted by user"` 哨兵），`PIN_CAP=10` 限制最多保留 10 个锚点，超出的旧锚点折叠为 `[Earlier tasks: …]`。占位中还嵌入 `_build_snipped_activity_summary`（无 LLM 纯统计摘要：工具调用分布 + 最后 assistant 文本 + 截断用户提示）+ `_build_post_compact_context`（最近文件/todos/任务看板/队友）。尾部经 `_strip_orphan_head` + `_strip_orphan_tail` 双向孤儿清理。
 
 ```python
 # agent.py: 每轮循环的压缩管线
@@ -253,7 +261,23 @@ threading.Thread(target=_post_turn_memory, args=(pre_compress,),
                  daemon=True, name="memory-extract").start()
 ```
 
-记忆检索采用 **LLM 优先 + 关键词兜底** 双策略：先用 LLM 从记忆目录中选出相关条目（返回 JSON 索引数组），LLM 调用失败则回退关键词匹配。记忆文件数达阈值（10）时自动触发 `consolidate_memories` 合并去重，防止记忆膨胀。全部操作加 `memory_lock` 防并发冲突。
+**4 阶段检索策略**：
+1. **Feedback 始终注入**--所有 `type=feedback` 记忆无条件注入（全局用户指导），不受关键词或 LLM 选择影响。
+2. **LLM 选择**（主路径）--构建 catalog（含 `[type]` 标签 + 名称 + 描述），提示优先级 `user > feedback > project > reference`，LLM 返回 JSON 索引数组。
+3. **关键词回退**（LLM 失败时）--关键词匹配 `name + description + body[:200]`（body 前 200 字符参与匹配），feedback 仍无条件加入。
+4. **max_items 限制**--所有选中记忆（含 feedback 合并）受 `max_items`（默认 5）上限约束。
+
+**记忆注入位置**：`_await_memories` 结果**前置到最后一条 user 消息的 content**（`memories_content + "\n\n" + original_content`），不放入 system prompt、不作为独立消息。
+
+**时效性管理体系**（Plan D）：
+- **5 个 frontmatter 字段**：`created_at`/`updated_at`/`hit_count`/`last_used`/`expires_at`，在 `_build_frontmatter` 中按固定顺序序列化。
+- **`_touch_memory`**：记忆被注入对话时递增 `hit_count` + 刷新 `last_used`（必须在持锁时调用）。
+- **TTL 过期**：`is_expired()` 检查 `expires_at`；提取时 prompt 引导 LLM 为易失事实（临时分支名、冲刺任务）设置 TTL。
+- **死记忆检测**：`is_dead_memory()`--`hit_count=0` 且 `last_used` 超过 `DEAD_MEMORY_DAYS=7` 天。
+- **`cleanup_stale_memories()`**：删除过期 + 死记忆，**feedback 类型永不清除**（用户指导不可丢失）。
+- **合并 catalog 标签**：`[EXPIRED]`/`[DEAD: never used, stale]` 标记 + prompt 规则 1-7（newer-wins、hit_count 优先、先删过期/死记忆）。
+
+**轮后三步流水线**：`_post_turn_memory` 在后台线程中按 **extract -> cleanup_stale_memories -> consolidate_memories** 顺序执行--先提取新记忆，再清除过期/死记忆（让合并看到更干净的 catalog），最后合并去重。线程参数是 `pre_compress`（压缩前完整快照），`daemon=True`，线程名 `"memory-extract"`，主循环不 join。全部操作加 `memory_lock`（超时 `ctx.memory_lock_timeout=30s`）防并发冲突。
 
 ### 9. 流式响应聚合 + SDK 解耦——不绑死 pydantic
 
@@ -418,6 +442,7 @@ ctx.teammate_registry    # name -> {role, spawned_at, status}
 ctx.skill_registry       # name -> {name, description, content}
 ctx.hooks                # 事件 -> [callback] 四类钩子
 ctx.memory_lock          # 记忆读写锁（防并发）
+ctx.memory_lock_timeout  # 锁获取超时（30s，load_memories / _post_turn_memory 均用此值）
 ctx.calibrator           # TokenCalibrator 实例
 ctx._mcp_manager         # MCPManager（惰性创建，见 .mcp 属性）
 ```
@@ -522,20 +547,67 @@ ctx._mcp_manager         # MCPManager（惰性创建，见 .mcp 属性）
 
 ### `memory.py` — 记忆系统
 
-基于 `.memory/*.md` 文件 + `MEMORY.md` 索引的长期记忆。
+基于 `.memory/*.md` 文件 + `MEMORY.md` 索引的长期记忆。每个记忆文件为 YAML-like frontmatter + Markdown body，frontmatter 含 8 个字段（固定顺序）：`name, description, type, created_at, updated_at, hit_count, last_used, expires_at`。
+
+**写入与索引**：
 
 | 函数 | 作用 |
 |------|------|
-| `write_memory_file` | 写记忆文件 + 重建索引 |
-| `_rebuild_index` | 扫描所有 `.md` 生成 `MEMORY.md` |
-| `read_memory_index` / `read_memory_file` / `list_memory_files` | 读取 |
-| `select_relevant_memories` | **LLM 选择**相关记忆（返回 JSON 索引数组），失败回退关键词匹配 |
-| `load_memories` | 加载选中记忆到 `<relevant_memories>` 文本块（加锁） |
-| `extract_memories` | 轮后从最近 10 条对话**提取新记忆**（LLM 返回 JSON 数组） |
-| `consolidate_memories` | 文件数 ≥ 阈值时**合并去重**（LLM 重写全部记忆） |
-| `_post_turn_memory` | 轮后后台执行 extract + consolidate（加锁） |
-| `_load_memories_async` | **后台线程**加载记忆，返回 `["", thread]` holder |
-| `_await_memories` | 等待异步加载完成（join timeout=60s） |
+| `_now_iso()` | 生成 `YYYYMMDDTHHMMSS` 时间戳（秒精度，本地时间） |
+| `_slugify(name)` | 名称 -> 文件安全 slug：小写、空格/斜杠转连字符、剥离 Windows 非法字符、保留 CJK |
+| `_resolve_filepath(name, dir)` | **碰撞检测**：同名=更新（返回 `is_update=True`）；异名 slug 碰撞=加 `-2`/`-3`... 后缀共存（`is_update=False`），杜绝静默覆盖；上限 99 后回退时间戳 |
+| `_build_frontmatter(meta)` | 按固定顺序序列化 8 个字段（仅输出非 None 值） |
+| `_write_memory_file_no_index(name, type, desc, body, dir=None, *, created_at=None, expires_at=None)` | **批量写入器**：不重建索引；更新时保留 `created_at`/`hit_count`/`last_used`/`expires_at`；`directory` 运行时读取（非定义时绑定） |
+| `write_memory_file(name, type, desc, body)` | 公共单文件写入器：委托 `_write_memory_file_no_index` + 立即 `_rebuild_index` |
+| `_rebuild_index(dir=None)` / `_rebuild_index_in(dir)` | 扫描目录生成 `MEMORY.md`（每行 `- [name](filename) - desc`），排除 `MEMORY.md` 自身 |
+
+**读取**：
+
+| 函数 | 作用 |
+|------|------|
+| `read_memory_index()` | 返回 `MEMORY.md` 全文（不存在则空串） |
+| `read_memory_file(filename)` | 返回指定记忆文件全文（不存在则 `None`） |
+| `list_memory_files()` | 返回所有记忆的元数据列表，含 `filename`/`name`/`description`/`type`/`body` + 5 个新字段 |
+
+**时效性管理（Plan D）**：
+
+| 函数 / 常量 | 作用 |
+|------|------|
+| `DEAD_MEMORY_DAYS = 7` | 死记忆阈值（天） |
+| `_parse_iso(ts)` | 解析 `YYYYMMDDTHHMMSS` -> epoch 秒 |
+| `is_expired(meta)` | TTL 过期判断：`expires_at` 已过则 `True`（空/不可解析则 `False`） |
+| `is_dead_memory(meta, days=7)` | 死记忆判断：`hit_count=0` 且 `last_used`（或 `created_at`）超过 `days` 天 |
+| `cleanup_stale_memories() -> int` | 删除过期 + 死记忆，**feedback 类型永不清除**；有删除则重建索引；返回删除数 |
+| `_touch_memory(filename)` | 注入时递增 `hit_count` + 刷新 `last_used`（必须在持锁时调用）；失败静默吞异常 |
+
+**检索与注入**：
+
+| 函数 | 作用 |
+|------|------|
+| `select_relevant_memories(messages, max_items=5)` | **4 阶段策略**：① feedback 始终注入 ② LLM 选择（catalog 含 `[type]` 标签 + 优先级 `user > feedback > project > reference`）③ 关键词回退（匹配 `name + description + body[:200]`）④ max_items 限制 |
+| `load_memories(messages) -> str` | 加载选中记忆到 `<relevant_memories>` 文本块；加锁（`ctx.memory_lock`，超时 `ctx.memory_lock_timeout`）；对每个注入的记忆调用 `_touch_memory` |
+
+**提取**：
+
+| 函数 | 作用 |
+|------|------|
+| `_parse_json_array_robust(text)` | 容错 JSON 解析：`raw_decode` -> 自动闭合括号重试 |
+| `_extract_memories_from_response(response) -> list` | 从 LLM 响应提取 JSON 数组；处理 `finish_reason="length"` 截断（截取到最后 `}` + 补 `]`） |
+| `extract_memories(messages)` | 从最近 10 条对话提取新记忆；prompt 含 `expires_at` 指令（仅易失事实设置 TTL）+ 传入已有记忆列表避免重复；LLM 返回 `[{name, type, description, body, expires_at}]` |
+
+**合并去重**：
+
+| 函数 | 作用 |
+|------|------|
+| `consolidate_memories()` | 文件数 ≥ `CONSOLIDATE_THRESHOLD`（10）时触发：**原子交换**（temp 目录 -> 备份 -> 提升 -> 失败回滚）；catalog 含全部时间字段 + `[EXPIRED]`/`[DEAD]` 标签；prompt 规则 1-7（合并重复、删除过期/死记忆、newer-wins、hit_count 优先、保留用户偏好、总量 ≤30） |
+
+**后台线程编排**：
+
+| 函数 | 作用 |
+|------|------|
+| `_post_turn_memory(messages_snapshot)` | 轮后三步：**extract -> cleanup_stale_memories -> consolidate_memories**（加锁，全异常吞） |
+| `_load_memories_async(messages)` | 后台 daemon 线程加载记忆，返回 `["", thread]` holder |
+| `_await_memories(holder) -> str` | `join(timeout=60)` 取结果 |
 
 记忆类型：`user` / `feedback` / `project` / `reference`。所有 LLM 调用均 `try/except` 吞异常，不影响主流程。
 
@@ -576,14 +648,17 @@ ctx._mcp_manager         # MCPManager（惰性创建，见 .mcp 属性）
 | `estimate_tokens_messages` | 估算 | 4 字符≈1 token + overhead，乘校准因子 |
 | `tool_result_budget` | **L3 持久化** | 限制最近一轮 tool 输出总字节（200KB），超限的调 `persist_large_output` 落盘 |
 | `persist_large_output` | L3 | 超 `PERSIST_THRESHOLD`（30KB）的输出写到 `.task_outputs/`，返回预览占位 |
-| `snip_compact` | **L1 截断** | 保留头部 1 轮 + 尾部 N 轮，中间替换为 `[snipped X turns]` 占位 |
-| `micro_compact` | **L2 微压缩** | 旧轮次 tool_result 内容替换为占位，保留最近 N 轮完整 |
+| `snip_compact` | **L1 截断** | Pin 真实用户任务提示（`_is_task_anchor`，`PIN_CAP=10`）+ 保留尾部 50 轮（`min_keep_turns`）+ 占位含 `_build_post_compact_context` + `_build_snipped_activity_summary` + 双向孤儿清理 |
+| `micro_compact` | **L2 微压缩** | 旧轮次中 `len > 120` 的 tool_result 替换为 `"[Earlier tool result compacted. Re-run if needed. ]"`，保留最近 25 轮（`KEEP_RECENT_LOOP_TURN`）完整 |
 | `compact_history` | **自动压缩** | 落盘 transcript → LLM 摘要 → `_build_post_compact_context` 重建上下文块 |
 | `reactive_compact` | **反应式压缩** | API 报 prompt_too_long 时触发，同自动压缩 |
 | `write_transcript` | 持久化 | 写 `.transcripts/transcript_*.jsonl` |
 | `summarize_history` | LLM 摘要 | 保留目标/发现/文件/待办/约束 |
 | `_build_post_compact_context` | 重建 | 汇总：最近访问文件 + 当前 plan + 任务看板 + 活跃队友 |
-| `group_turns` / `ensure_valid_start` / `_strip_orphan_*` | 辅助 | 按工具调用分组、清理孤儿 tool 消息 |
+| `group_turns` / `ensure_valid_start` | 辅助 | 按工具调用分组、清理头部孤儿 tool 消息 |
+| `_strip_orphan_head` / `_strip_orphan_tail` | 辅助 | 头/尾孤儿 tool 消息 + 悬空 tool_calls 清理 |
+| `_strip_snip_markers` / `_is_snip_marker` | 辅助 | 清理上次运行遗留的 `[snipped…]` 占位符，防叠加 |
+| `_is_task_anchor` / `_build_snipped_activity_summary` | 辅助 | 识别真实用户任务提示 / 无 LLM 纯统计活动摘要 |
 
 ---
 
@@ -702,18 +777,25 @@ MCPManager  (同步门面，主线程)
 **`agent_loop(messages)`** —— 核心循环：
 
 ```
+循环前: _load_memories_async(messages)  # 后台线程异步加载记忆，返回 ["", thread]
+
 while True:
   1. build_system() 重建 system prompt
-  2. 三级压缩: tool_result_budget → snip_compact → micro_compact
-  3. 超限则 compact_history 自动压缩
-  4. 组装 request_messages（插 system + 注入记忆到最后一条 user）
-  5. sanitize_messages 清洗
-  6. stream_response 流式调用（temperature=0.7, max_tokens=16384, enable_thinking=False）
-  7. 异常处理: timeout 重试 / prompt_too_long 反应式压缩
-  8. 记录 token 校准样本
-  9. append sanitize_message(assistant)
- 10. finish_reason != tool_calls → 后台 _post_turn_memory + Stop hook → return
- 11. 遍历 tool_calls: PreToolUse hook → handler(**parse_tool_args) → PostToolUse hook → append tool result
+  2. pre_compress = deepcopy(messages)  # 压缩前快照，供 _post_turn_memory 使用
+  3. 三级压缩: tool_result_budget → snip_compact → micro_compact
+  4. 超限则 compact_history 自动压缩；messages[:] = 压缩结果（永久写回）
+  5. 组装 request_messages（插 system）
+  6. _await_memories(_mem_holder)  # join(timeout=60) 取记忆加载结果
+  7. 记忆注入: 前置到最后一条 user 消息 content（memories_content + "\n\n" + 原文）
+  8. sanitize_messages 清洗
+  9. stream_response 流式调用（temperature=0.7, max_tokens=16384, enable_thinking=False）
+ 10. 异常处理: timeout 重试 / prompt_too_long 反应式压缩
+ 11. 记录 token 校准样本
+ 12. append sanitize_message(assistant)
+ 13. finish_reason != tool_calls →
+       Thread(target=_post_turn_memory, args=(pre_compress,), daemon=True).start()
+       Stop hook → return
+ 14. 遍历 tool_calls: PreToolUse hook → handler(**parse_tool_args) → PostToolUse hook → append tool result
 ```
 
 **`_run_agent_turn(history)`**：执行一次 `agent_loop`，捕获异常，返回是否应退出 REPL。
@@ -753,4 +835,21 @@ L1 snip（截断中间轮）→ L2 micro（占位旧 tool_result）→ L3 persis
 
 ### 7. MCP 异步核心 + 同步门面
 MCP SDK 为异步，但整个 codebase 同步。`MCPClient` 在专用 daemon 线程跑独立事件循环，通过 `run_coroutine_threadsafe` 桥接，使 `ClientSession` 跨多次调用存活且主线程零 async 样板。工具名加 `mcp__{server}__{tool}` 前缀防冲突；整个子系统容错——配置缺失、JSON 损坏、连接或调用失败均降级为 no-op，绝不影响主程序启动。
+
+### 8. 记忆时效性管理
+
+记忆系统建立了完整的时效性闭环：提取时 LLM 为易失事实设置 `expires_at`（TTL）；注入时 `_touch_memory` 递增 `hit_count` + 刷新 `last_used`（区分"热"记忆与"死"记忆）；轮后 `cleanup_stale_memories` 删除过期（`is_expired`）和死记忆（`is_dead_memory`：`hit_count=0` 且超过 `DEAD_MEMORY_DAYS=7` 天）；合并时 catalog 携带 `[EXPIRED]`/`[DEAD]` 标签引导 LLM 优先清除。**feedback 类型永不清除**--用户指导（格式规则、安全约束）不可丢失。`_post_turn_memory` 的三步顺序（extract -> cleanup -> consolidate）确保合并看到的是已清除过期数据的干净 catalog。
+
+### 9. 确定性去重
+
+`_resolve_filepath` 通过 slug 碰撞检测实现确定性去重：两个不同记忆 slug 化后相同（如 `"Color Scheme"` 和 `"color-scheme"`）时，第二个自动加 `-2` 后缀**共存**而非静默覆盖。同一记忆的更新（name 字段匹配）则原地覆盖，并保留 `created_at`/`hit_count`/`last_used`/`expires_at` 等元数据--更新不会重置记忆的"身份"和"热度"。
+
+### 10. 记忆原子合并
+
+`consolidate_memories` 采用**原子目录交换**保证合并过程的数据完整性：先将 LLM 重写的结果写入 temp 目录（`.memory_tmp_*`），重建索引后执行 `shutil.move(MEMORY_DIR -> backup)` + `shutil.move(temp -> MEMORY_DIR)`；若提升失败则 `shutil.move(backup -> MEMORY_DIR)` 回滚。成功后删除 backup。外层 `except` 作为最后防线确保 `MEMORY_DIR` 存在（有 backup 则恢复，否则 mkdir）。
+
+### 11. JSON 截断容错
+
+LLM 返回的 JSON 可能因 `max_tokens` 限制而截断（`finish_reason="length"`）。记忆系统实现两级容错：`_parse_json_array_robust` 先用 `raw_decode` 精确解析前导数组，失败则统计未闭合的 `[`/`{` 数量自动补齐括号重试；`_extract_memories_from_response` 在截断场景下截取到最后一个 `}` + 补 `]` 进行二次修复。保证单次截断不会导致整批记忆丢失。
+
 
