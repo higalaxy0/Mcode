@@ -122,9 +122,11 @@ def _send_message_tool() -> dict:
 def _submit_plan_tool() -> dict:
     return {"type": "function", "function": {
         "name": "submit_plan",
-        "description": "Submit a plan for Lead approval.",
-        "parameters": {"type": "object", "properties": {"plan": {"type": "string"}},
-                       "required": ["plan"]}}}
+        "description": "Submit a plan for Lead approval. You must own the task.",
+        "parameters": {"type": "object", "properties": {
+            "plan": {"type": "string"},
+            "task_id": {"type": "string", "description": "The ID of the task this plan is for."}},
+            "required": ["plan", "task_id"]}}}
 
 
 def _list_tasks_tool() -> dict:

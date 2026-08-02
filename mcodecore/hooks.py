@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .config import WORKDIR, _DENY_LIST
+from .config import _DENY_LIST
 from .context import ctx
 from .utils import parse_tool_args
 
@@ -31,23 +31,17 @@ def permission_hook(function) -> str | None:
 
 
 def log_hook(function) -> None:
-    """PreToolUse: print tool call log."""
-    print(f"\033[90m[HOOK] {function.name}\033[0m")
+    """PreToolUse: tool call log (superseded by agent tool-call echo)."""
     return None
 
 
 def context_inject_hook(query: str) -> None:
-    """UserPromptSubmit: print working directory."""
-    print(f"\033[90m[HOOK] UserPromptSubmit: working in {WORKDIR}\033[0m")
+    """UserPromptSubmit: working directory (static, no-op)."""
     return None
 
 
 def summary_hook(messages: list) -> None:
-    """Stop: print total tool call count for the session."""
-    tool_count = sum(1 for m in messages
-                     for b in (m.get("content") if isinstance(m.get("content"), list) else [])
-                     if isinstance(b, dict) and b.get("role") == "tool")
-    print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
+    """Stop: session tool count (no-op; kept for hook registration compat)."""
     return None
 
 

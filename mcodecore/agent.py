@@ -6,11 +6,11 @@ import copy
 import json
 import threading
 
-from .config import (LLM_MODEL, MAX_REACTIVE_RETRIES, CONTEXT_LIMIT, client, _enable_ansi)
+from .config import (LLM_MODEL, MAX_REACTIVE_RETRIES, CONTEXT_LIMIT, client, _enable_ansi, debug)
 from .context import ctx
 from .exceptions import AgentInterrupt
 from .hooks import trigger_hooks
-from .streaming import stream_response
+from .streaming import stream_response, classify_transient, retry_after_seconds, backoff_delay
 from .compact import (estimate_tokens_messages, tool_result_budget, snip_compact,
                       micro_compact, compact_history, reactive_compact)
 from .memory import _load_memories_async, _await_memories, _post_turn_memory
@@ -42,10 +42,10 @@ def agent_loop(messages: list) -> None:
         api_messages[:] = snip_compact(api_messages)
         api_messages[:] = micro_compact(api_messages)
         if estimate_tokens_messages(api_messages) > CONTEXT_LIMIT:
-            print(f"[auto compact,context size = {estimate_tokens_messages(api_messages)}]")
+            debug(f"[auto compact, context size = {estimate_tokens_messages(api_messages)}]")
             api_messages[:] = compact_history(api_messages)
         messages[:] = copy.deepcopy(api_messages)
-        print("\033[1;32m\nagent: thinking!!!!\033[0m")
+        print("\033[1;32m\nagent: thinking!\033[0m")
         try:
             request_messages = api_messages.copy()
             request_messages.insert(0, {"role": "system", "content": SYSTEM})
@@ -83,20 +83,25 @@ def agent_loop(messages: list) -> None:
         except Exception as e:
             _e_name = type(e).__name__
             _e_str = str(e).lower()
-            _is_timeout = ("timeout" in _e_name.lower()
-                           or "timeout" in _e_str
-                           or "timed out" in _e_str)
-            if _is_timeout:
-                print(f"\033[31magent API error: retrying! {_e_name}:{str(e)[:200]}]\033[0m")
+            # Transient errors: 429 / 5xx / connection errors / timeouts.
+            # Retry with exponential backoff, respecting Retry-After header.
+            if classify_transient(e):
                 if reactive_retries < MAX_REACTIVE_RETRIES:
+                    delay = retry_after_seconds(e)
+                    if delay is None:
+                        delay = backoff_delay(reactive_retries)
+                    debug(f"[agent retry {reactive_retries + 1}/{MAX_REACTIVE_RETRIES} "
+                          f"after {delay:.1f}s: {_e_name}: {str(e)[:200]}")
+                    import time as _time
+                    _time.sleep(delay)
                     reactive_retries += 1
                     continue
             if ("prompt_too_long" in _e_str or "too many tokens" in _e_str) and reactive_retries < MAX_REACTIVE_RETRIES:
-                print("[reactive compact]")
+                debug("[reactive compact]")
                 messages[:] = reactive_compact(messages)
                 reactive_retries += 1
                 continue
-            print(f"\033[33m[API error, {_e_name}: {str(e)[:200]}]\033[0m")
+            debug(f"[API error, {_e_name}: {str(e)[:200]}]")
             raise
         if getattr(response, "usage", None) and getattr(response.usage, "prompt_tokens", None):
             _estimated_req = estimate_tokens_messages(request_messages)
@@ -104,7 +109,6 @@ def agent_loop(messages: list) -> None:
         assistant_message = response.choices[0].message
         messages.append(sanitize_message(assistant_message.model_dump(exclude_none=True)))
         if response.choices[0].finish_reason == "interrupted":
-            print("\033[33m[interrupted by user]\033[0m")
             return
         if response.choices[0].finish_reason != "tool_calls":
             threading.Thread(
@@ -170,7 +174,7 @@ def _drain_inbox(history: list) -> bool:
         return False
     inbox_text = "\n".join(f"From {m['from']}: {m['content']}" for m in inbox_msgs)
     history.append({"role": "user", "content": f"[Inbox]\n{inbox_text}"})
-    print(f"\n\033[33m[Inbox: {len(inbox_msgs)} messages injected]\033[0m")
+    debug(f"\n[Inbox: {len(inbox_msgs)} messages injected]")
     return _run_agent_turn(history)
 
 

@@ -59,12 +59,57 @@ KEEP_RECENT_LOOP_TURN: int = 25
 PERSIST_THRESHOLD: int = 30000
 _MSG_OVERHEAD_TOKENS: int = 4
 CONSOLIDATE_THRESHOLD: int = 10
+# Four-layer gating (inspired by Claude Code autoDream):
+#   Gate 0 (hard limit): file count >= CONSOLIDATE_HARD_LIMIT -> force merge
+#   Gate 1 (count floor): file count >= CONSOLIDATE_THRESHOLD
+#   Gate 2 (time cooldown): CONSOLIDATE_MIN_INTERVAL seconds since last merge
+#   Gate 3 (activity): CONSOLIDATE_MIN_TRANSCRIPTS new transcripts since last merge
+#   Gate 4 (cross-process lock): .consolidate-lock must be acquirable
+CONSOLIDATE_HARD_LIMIT: int = 50
+CONSOLIDATE_MIN_INTERVAL: int = 86400       # 24 hours
+CONSOLIDATE_MIN_TRANSCRIPTS: int = 5
+CONSOLIDATE_LOCK_STALE: int = 600           # 10 minutes; stale lock is stealable
+# Scan-throttle cache: list_memory_files() results cached for this many seconds.
+MEMORY_CACHE_TTL: int = 30
 
 IDLE_POLL_INTERVAL: int = 5
 IDLE_TIMEOUT: int = 60
 MAX_REACTIVE_RETRIES: int = 3
 
+# Teammate turn-budget controls (Fix #1 A+C):
+#   TURN_BUDGET          - soft cap per work cycle; exhausted -> idle_poll
+#   TURN_BUDGET_RENEWAL  - extra turns granted when the worker still owns
+#                          in_progress tasks at exhaustion
+#   TURN_BUDGET_HARD_CAP - absolute maximum total turns per work cycle,
+#                          prevents infinite renewal loops
+#   CLAIM_MIN_TURNS      - minimum remaining turns required to claim a new
+#                          task; prevents claiming when budget is nearly
+#                          exhausted (Fix #1C)
+TURN_BUDGET: int = 50
+TURN_BUDGET_RENEWAL: int = 20
+TURN_BUDGET_HARD_CAP: int = 100
+CLAIM_MIN_TURNS: int = 10
+
 _DENY_LIST: list[str] = ["sudo", "shutdown", "reboot", "mkfs", "dd if=", "REN"]
+
+# --------------------------------------------------------------------------- #
+# Verbosity gate
+# --------------------------------------------------------------------------- #
+# MCODE_VERBOSE=1 enables debug-level prints (compaction internals, memory
+# background activity, bus routing, idle-poll scheduling).  Default is 0
+# (quiet) so that only high-signal messages reach the user.
+VERBOSE: bool = os.getenv("MCODE_VERBOSE", "0") == "1"
+
+
+def debug(msg: str) -> None:
+    """Print *msg* only when MCODE_VERBOSE=1 is set.
+
+    Use for diagnostic output that is useful when troubleshooting but
+    would otherwise dilute the user's attention during normal operation.
+    """
+    if VERBOSE:
+        print(msg)
+
 
 _IS_WINDOWS: bool = platform.system() == "Windows"
 _POPEN_KWARGS: dict = {}

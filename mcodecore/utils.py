@@ -97,17 +97,60 @@ def parse_tool_args(arguments: str | None) -> dict:
     return {}
 
 
-def sanitize_message(msg: dict) -> dict:
-    """Ensure a message dict always carries a ``content`` key.
+def _validate_tool_args(arguments: str | None) -> str:
+    """Return a valid JSON-object string for tool-call *arguments*.
 
-    The backend rejects any message missing ``content``. Assistant messages
-    produced from ``model_dump(exclude_none=True)`` drop ``content`` when it is
-    ``None`` (pure tool-call turns); this re-injects an empty string.
+    The backend rejects assistant messages whose ``tool_calls[].function.arguments``
+    is not a valid JSON object (e.g. truncated JSON from an interrupted stream,
+    a bare number, or an empty string when the schema requires an object).
+    This function repairs such values in-place:
+
+    * Empty / ``None`` -> ``"{}"``
+    * Valid JSON object -> unchanged
+    * Valid JSON but not an object (array / number / string / null) -> ``"{}"``
+    * Invalid JSON -> ``"{}"``
+
+    The original (possibly malformed) text is preserved inside a ``_raw``
+    key so no information is lost for debugging, while keeping the payload
+    parseable for the API.
+    """
+    import json as _json
+    if not arguments:
+        return "{}"
+    try:
+        parsed = _json.loads(arguments)
+    except (ValueError, TypeError):
+        return "{}"
+    if isinstance(parsed, dict):
+        return arguments
+    return "{}"
+
+
+def sanitize_message(msg: dict) -> dict:
+    """Ensure a message dict always carries a ``content`` key and valid tool_calls.
+
+    Two repairs are performed:
+
+    1. Every message gets a non-null ``content`` (empty string when absent).
+       The backend rejects messages missing ``content``; assistant messages
+       from ``model_dump(exclude_none=True)`` drop it when it is ``None``
+       (pure tool-call turns).
+
+    2. Assistant messages with ``tool_calls`` have each tool call's
+       ``arguments`` validated.  Malformed / truncated JSON arguments
+       (left behind by an interrupted stream or a persisted transcript)
+       cause a 400 BadRequest on the next API call, so they are repaired
+       to ``"{}"`` here as a safety net.
     """
     role = msg.get("role")
     if role in ("assistant", "user", "system", "tool"):
         if "content" not in msg or msg["content"] is None:
             msg["content"] = ""
+    if role == "assistant" and msg.get("tool_calls"):
+        for tc in msg["tool_calls"]:
+            fn = tc.get("function")
+            if fn and "arguments" in fn:
+                fn["arguments"] = _validate_tool_args(fn["arguments"])
     return msg
 
 

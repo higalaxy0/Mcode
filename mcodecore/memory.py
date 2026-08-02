@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -10,9 +11,30 @@ import time
 from pathlib import Path
 
 from .config import (MEMORY_DIR, MEMORY_INDEX, CONSOLIDATE_THRESHOLD,
-                     LLM_MODEL, client)
+                     CONSOLIDATE_HARD_LIMIT, CONSOLIDATE_MIN_INTERVAL,
+                     CONSOLIDATE_MIN_TRANSCRIPTS, CONSOLIDATE_LOCK_STALE,
+                     MEMORY_CACHE_TTL,
+                     TRANSCRIPT_DIR, LLM_MODEL, client, debug)
 from .context import ctx
 from .utils import parse_frontmatter
+
+
+# --------------------------------------------------------------------------- #
+# Scan-throttle cache (Gate: avoid frequent filesystem scans)
+# --------------------------------------------------------------------------- #
+# Module-level cache for list_memory_files() results.  A fresh directory scan
+# is expensive (open + parse every .md file); this cache holds the result list
+# for MEMORY_CACHE_TTL seconds so that rapid successive calls (e.g. extract ->
+# select -> consolidate within one post-turn hook) do not re-scan repeatedly.
+_memory_cache: list[dict] | None = None
+_memory_cache_ts: float = 0.0
+
+
+def _invalidate_memory_cache() -> None:
+    """Force the next :func:`list_memory_files` call to perform a fresh scan."""
+    global _memory_cache, _memory_cache_ts
+    _memory_cache = None
+    _memory_cache_ts = 0.0
 
 
 def _now_iso() -> str:
@@ -148,6 +170,7 @@ def _write_memory_file_no_index(name: str, mem_type: str,
     if expires_at:
         meta["expires_at"] = expires_at
     filepath.write_text(f"{_build_frontmatter(meta)}\n\n{body}\n")
+    _invalidate_memory_cache()
     return filepath
 
 
@@ -237,6 +260,7 @@ def cleanup_stale_memories() -> int:
                 pass
     if removed:
         _rebuild_index()
+        _invalidate_memory_cache()
     return removed
 
 
@@ -286,12 +310,24 @@ def _touch_memory(filename: str) -> None:
         if meta.get("expires_at"):
             full_meta["expires_at"] = meta["expires_at"]
         path.write_text(f"{_build_frontmatter(full_meta)}\n\n{body}\n")
+        _invalidate_memory_cache()
     except Exception:
         pass
 
 
 def list_memory_files() -> list[dict]:
-    """List all memory files (excluding the MEMORY.md index)."""
+    """List all memory files (excluding the MEMORY.md index).
+
+    Results are cached for :data:`MEMORY_CACHE_TTL` seconds to avoid
+    rescanning the filesystem on every call within a single post-turn
+    hook.  The cache is invalidated by :func:`_invalidate_memory_cache`
+    and by any write operation (:func:`write_memory_file`,
+    :func:`_write_memory_file_no_index`, :func:`cleanup_stale_memories`).
+    """
+    global _memory_cache, _memory_cache_ts
+    now = time.time()
+    if _memory_cache is not None and (now - _memory_cache_ts) < MEMORY_CACHE_TTL:
+        return _memory_cache
     result = []
     for f in sorted(MEMORY_DIR.glob("*.md")):
         if f.name == "MEMORY.md":
@@ -310,6 +346,8 @@ def list_memory_files() -> list[dict]:
             "last_used": meta.get("last_used", ""),
             "expires_at": meta.get("expires_at", ""),
         })
+    _memory_cache = result
+    _memory_cache_ts = now
     return result
 
 
@@ -559,11 +597,192 @@ def extract_memories(messages: list) -> None:
             count += 1
     if count:
         _rebuild_index()
-        print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
+        debug(f"[Memory: extracted {count} new memories]")
+
+
+# --------------------------------------------------------------------------- #
+# Four-layer consolidation gate (inspired by Claude Code autoDream)
+# --------------------------------------------------------------------------- #
+#   Gate 0 (hard limit): file count >= CONSOLIDATE_HARD_LIMIT -> force merge
+#   Gate 1 (count floor): file count >= CONSOLIDATE_THRESHOLD
+#   Gate 2 (time cooldown): CONSOLIDATE_MIN_INTERVAL seconds since last merge
+#   Gate 3 (activity): CONSOLIDATE_MIN_TRANSCRIPTS new transcripts since last merge
+#   Gate 4 (cross-process lock): .consolidate-lock must be acquirable
+#
+# The gate is evaluated by :func:`_should_consolidate` which is called from
+# :func:`_post_turn_memory` *before* the (expensive) LLM consolidation call.
+
+# Default state used when no state file exists (first run / deleted state).
+_CONSOLIDATE_STATE_DEFAULTS: dict = {
+    "last_consolidate_ts": 0,
+    "last_file_count": 0,
+    "turns_since_last": 0,
+}
+
+
+def _state_file_path() -> Path:
+    """Return the path to ``consolidation_state.json``."""
+    return MEMORY_DIR / "consolidation_state.json"
+
+
+def _lock_file_path() -> Path:
+    """Return the path to the cross-process ``.consolidate-lock`` file."""
+    return MEMORY_DIR / ".consolidate-lock"
+
+
+def _load_consolidation_state() -> dict:
+    """Load consolidation state, returning safe defaults on any error.
+
+    Missing file, corrupt JSON, and missing keys all fall back to
+    :data:`_CONSOLIDATE_STATE_DEFAULTS` so callers never see KeyError.
+    """
+    path = _state_file_path()
+    state = dict(_CONSOLIDATE_STATE_DEFAULTS)
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            for key in _CONSOLIDATE_STATE_DEFAULTS:
+                state[key] = data.get(key, _CONSOLIDATE_STATE_DEFAULTS[key])
+    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+        pass
+    return state
+
+
+def _save_consolidation_state(ts: float, file_count: int) -> None:
+    """Persist consolidation state atomically.
+
+    Writes the timestamp of the last consolidation and the file count at
+    that time so that future gate checks can compute elapsed time and
+    new-transcript activity.
+    """
+    state = {
+        "last_consolidate_ts": ts,
+        "last_file_count": file_count,
+        "turns_since_last": 0,
+    }
+    path = _state_file_path()
+    tmp = path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(state), encoding="utf-8")
+        os.replace(str(tmp), str(path))
+    except OSError:
+        pass
+
+
+def _acquire_consolidate_lock() -> bool:
+    """Try to acquire the cross-process consolidation lock.
+
+    Returns ``True`` if the lock was acquired (or stolen from a stale
+    holder), ``False`` if another live process holds it.  The lock file
+    stores ``{"pid": int, "ts": float}`` so that a crashed process's
+    lock becomes stealable after :data:`CONSOLIDATE_LOCK_STALE` seconds.
+    """
+    path = _lock_file_path()
+    now = time.time()
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            holder_ts = float(data.get("ts", 0))
+            if (now - holder_ts) < CONSOLIDATE_LOCK_STALE:
+                return False  # lock is fresh -- held by another process
+        except (json.JSONDecodeError, ValueError, OSError):
+            pass  # corrupt lock -- treat as stale, fall through to steal
+    # Lock is absent or stale: write our claim.
+    try:
+        payload = json.dumps({"pid": os.getpid(), "ts": now})
+        path.write_text(payload, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+def _release_consolidate_lock() -> None:
+    """Release the consolidation lock (remove the lock file).
+
+    Silently does nothing if the file is already gone (e.g. another
+    process stole a stale lock and released it).
+    """
+    path = _lock_file_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
+def _count_new_transcripts(since_ts: float) -> int:
+    """Count transcript files in :data:`TRANSCRIPT_DIR` newer than *since_ts*.
+
+    A transcript is "new" if its mtime is strictly greater than *since_ts*.
+    When *since_ts* is 0 (epoch / first run) every transcript counts.
+    """
+    if not TRANSCRIPT_DIR.exists():
+        return 0
+    count = 0
+    for f in TRANSCRIPT_DIR.glob("transcript_*.jsonl"):
+        try:
+            if f.stat().st_mtime > since_ts:
+                count += 1
+        except OSError:
+            pass
+    return count
+
+
+def _should_consolidate() -> bool:
+    """Evaluate the four-layer gate.
+
+    Gate 0 (hard limit): if the memory file count has reached
+    :data:`CONSOLIDATE_HARD_LIMIT`, consolidation is forced immediately,
+    bypassing the time and activity gates (but NOT the lock -- the lock
+    is checked separately in :func:`consolidate_memories`).
+
+    Gates 1-3 must ALL pass for normal (non-forced) consolidation:
+      * Gate 1: ``file_count >= CONSOLIDATE_THRESHOLD``
+      * Gate 2: ``now - last_consolidate_ts >= CONSOLIDATE_MIN_INTERVAL``
+      * Gate 3: ``new_transcripts >= CONSOLIDATE_MIN_TRANSCRIPTS``
+
+    The lock (Gate 4) is intentionally NOT checked here -- it is acquired
+    inside :func:`consolidate_memories` so that a failed lock acquisition
+    cleanly skips the LLM call while still allowing the caller to proceed.
+    """
+    files = list_memory_files()
+    file_count = len(files)
+
+    # Gate 0 -- hard limit forces consolidation regardless of time/activity.
+    if file_count >= CONSOLIDATE_HARD_LIMIT:
+        return True
+
+    # Gate 1 -- count floor.
+    if file_count < CONSOLIDATE_THRESHOLD:
+        return False
+
+    state = _load_consolidation_state()
+    last_ts = state["last_consolidate_ts"]
+    now = time.time()
+
+    # Gate 2 -- time cooldown (0 means "never consolidated" -> passes).
+    if last_ts > 0 and (now - last_ts) < CONSOLIDATE_MIN_INTERVAL:
+        return False
+
+    # Gate 3 -- activity: enough new transcripts since last consolidation.
+    new_count = _count_new_transcripts(last_ts)
+    if new_count < CONSOLIDATE_MIN_TRANSCRIPTS:
+        return False
+
+    return True
 
 
 def consolidate_memories() -> None:
-    """Merge duplicate/stale memories (triggered when file count >= threshold).
+    """Merge duplicate/stale memories (triggered when the gate passes).
+
+    Gating (see :func:`_should_consolidate`):
+      * Gate 0 (hard limit) forces consolidation, bypassing time/activity.
+      * Gate 1 (count floor) is checked here: below both threshold and hard
+        limit the function returns immediately **without** touching the lock.
+      * Gate 4 (cross-process lock) is acquired here; if another process
+        holds it the call returns without invoking the LLM.
 
     Atomicity contract:
       All new memory files are written to a temporary directory first; only
@@ -571,10 +790,32 @@ def consolidate_memories() -> None:
       out (renamed to a backup) and the temp promoted. If any step fails the
       backup is restored, so the memory store is never left in a half-written
       state.
+
+    State & lock:
+      On success the consolidation state (timestamp + file count) is saved
+      and the lock is released.  On *any* failure (LLM error, swap error)
+      the lock is still released so a subsequent run can retry.
     """
     files = list_memory_files()
-    if len(files) < CONSOLIDATE_THRESHOLD:
+    file_count = len(files)
+
+    # Gate 1 (count floor) + Gate 0 (hard limit): if below both, skip without
+    # touching the lock (so below-threshold runs never create a lock file).
+    if file_count < CONSOLIDATE_THRESHOLD and file_count < CONSOLIDATE_HARD_LIMIT:
         return
+
+    # Gate 4 (cross-process lock): if held by another process, skip silently.
+    if not _acquire_consolidate_lock():
+        return
+
+    try:
+        _consolidate_memories_locked(files)
+    finally:
+        _release_consolidate_lock()
+
+
+def _consolidate_memories_locked(files: list[dict]) -> None:
+    """Core consolidation logic -- caller must already hold the lock."""
     catalog = "\n\n".join(
         f"## {f['filename']}\n"
         f"name: {f['name']}\ndescription: {f['description']}\n"
@@ -613,8 +854,7 @@ def consolidate_memories() -> None:
         return
     items = _extract_memories_from_response(response)
     if not items:
-        print("\n\033[33m[Memory: consolidation produced no items, "
-              "keeping originals]\033[0m")
+        debug("[Memory: consolidation produced no items, keeping originals]")
         return
 
     # ---- Atomic swap: write everything to a temp dir, then swap. ----
@@ -636,8 +876,7 @@ def consolidate_memories() -> None:
                 _write_memory_file_no_index(name, mem_type, desc, body, temp_dir)
                 written += 1
         if written == 0:
-            print("\n\033[33m[Memory: consolidation produced no valid "
-                  "memories, keeping originals]\033[0m")
+            debug("[Memory: consolidation produced no valid memories, keeping originals]")
             shutil.rmtree(temp_dir, ignore_errors=True)
             return
         # Rebuild the index inside the temp dir before promoting.
@@ -652,8 +891,11 @@ def consolidate_memories() -> None:
             raise
         # Success -- remove the backup.
         shutil.rmtree(backup_dir, ignore_errors=True)
-        print(f"\n\033[33m[Memory: consolidated {len(files)} -> "
-              f"{written} memories]\033[0m")
+        # The directory contents changed; force a cache refresh on next read.
+        _invalidate_memory_cache()
+        # Persist consolidation state so future gate checks see this run.
+        _save_consolidation_state(time.time(), written)
+        debug(f"[Memory: consolidated {len(files)} -> {written} memories]")
     except Exception:
         # Last-resort safety: ensure MEMORY_DIR exists and is populated.
         if not MEMORY_DIR.exists():
@@ -670,7 +912,13 @@ def _rebuild_index_in(directory: Path) -> None:
 
 
 def _post_turn_memory(messages_snapshot: list) -> None:
-    """Run after each turn: extract memories, clean stale, consolidate."""
+    """Run after each turn: extract memories, clean stale, then gate + consolidate.
+
+    Order matters: ``extract`` may add new memories, ``cleanup`` removes
+    stale ones, and only *then* is the four-layer gate evaluated.  When
+    :func:`_should_consolidate` returns ``False`` the (expensive) LLM
+    consolidation call is skipped entirely.
+    """
     try:
         if not ctx.memory_lock.acquire(timeout=ctx.memory_lock_timeout):
             return
@@ -678,9 +926,9 @@ def _post_turn_memory(messages_snapshot: list) -> None:
             extract_memories(messages_snapshot)
             removed = cleanup_stale_memories()
             if removed:
-                print(f"\n\033[33m[Memory: cleaned {removed} stale "
-                      f"memories]\033[0m")
-            consolidate_memories()
+                debug(f"[Memory: cleaned {removed} stale memories]")
+            if _should_consolidate():
+                consolidate_memories()
         finally:
             ctx.memory_lock.release()
     except Exception:

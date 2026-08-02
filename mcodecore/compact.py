@@ -11,7 +11,7 @@ from pathlib import Path
 from .calibrator import TokenCalibrator  # noqa: F401  (re-exported for compat)
 from .config import (CONTEXT_LIMIT, KEEP_RECENT_LOOP_TURN, PERSIST_THRESHOLD,
                      TOOL_RESULTS_DIR, TRANSCRIPT_DIR, _MSG_OVERHEAD_TOKENS,
-                     LLM_MODEL, client)
+                     LLM_MODEL, client, debug)
 from .context import ctx
 from .tasks import list_tasks
 
@@ -265,17 +265,9 @@ def snip_compact(messages: list, min_keep_turns: int = 50) -> list:
     tail_start = sum(len(t) for t in turns[:-keep_tail_turns])
 
     # 1) pinned: genuine user task prompts *before* the tail window (task
-    #    identity).  Capped so that long multi-task sessions don't let the
-    #    pinned block grow without bound: when the cap is exceeded the oldest
-    #    prompts are collapsed into a single terse summary line.
-    PIN_CAP = 10
+    #    identity).  All anchors are retained — the agent must never lose
+    #    track of what tasks were issued across a long session.
     pinned = [m for m in messages[:tail_start] if _is_task_anchor(m)]
-    if len(pinned) > PIN_CAP:
-        old = pinned[:-PIN_CAP]
-        recent = pinned[-PIN_CAP:]
-        old_summary = "; ".join((p.get("content") or "")[:60] for p in old)
-        pinned = [{"role": "user",
-                   "content": f"[Earlier tasks: {old_summary}]"}] + recent
 
     # 2) rebuilt context block (no LLM): recent files / todos / tasks /
     #    teammates.  When all three are empty (e.g. a pure bash session with
@@ -301,7 +293,7 @@ def snip_compact(messages: list, min_keep_turns: int = 50) -> list:
     #    interrupted mid-execution).
     tail_flat = _strip_orphan_tail(_strip_orphan_head([m for t in tail for m in t]))
 
-    print(f"snip_compact: pinned {len(pinned)} task prompts, kept tail "
+    debug(f"snip_compact: pinned {len(pinned)} task prompts, kept tail "
           f"{keep_tail_turns} turns, snipped {snipped_turns} turns (total {len(turns)})")
     result = pinned + [{"role": "user", "content": placeholder_content}] + tail_flat
     return ensure_valid_start(result)
@@ -349,7 +341,7 @@ def micro_compact(messages: list) -> list:
                 }
                 compacted += 1
     if compacted:
-        print(
+        debug(
             f"micro_compact: compacted {compacted} tool_results across "
             f"{len(turns_to_compact)} turns (kept recent {KEEP_RECENT_LOOP_TURN} turns)"
         )
@@ -392,7 +384,6 @@ def tool_result_budget(messages: list, max_bytes: int = 200_000) -> list:
         return messages
 
     ranked = sorted(last_turn_tools, key=lambda m: len(m.get("content") or ""), reverse=True)
-    print(f"tool_result_budget,last-turn bytes: {total}")
     for msg in ranked:
         total = sum(len(m.get("content") or "") for m in last_turn_tools)
         if total <= max_bytes:
@@ -458,7 +449,7 @@ def summarize_history(messages: list) -> str:
         )
         return response.choices[0].message.content.strip() or "(empty summary)"
     except Exception as e:
-        print(f"summarize_history error: {type(e).__name__}: {e}")
+        debug(f"summarize_history error: {type(e).__name__}: {e}")
         return "(summary failed - using raw tail)"
 
 
@@ -541,7 +532,7 @@ def _build_post_compact_context(messages: list, budget_tokens: int = 6000) -> st
 def compact_history(messages: list) -> list:
     """Auto compact: persist transcript + LLM summary + rebuild context."""
     transcript_path = write_transcript(messages)
-    print(f"[transcript saved: {transcript_path}]")
+    debug(f"[transcript saved: {transcript_path}]")
     summary = summarize_history(messages)
     context_block = _build_post_compact_context(messages)
     compacted = [{"role": "user", "content": f"[Compacted]\n\n{summary}\n\n{context_block}"}]
