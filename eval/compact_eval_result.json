@@ -1,0 +1,350 @@
+[
+  {
+    "scenario": "S1_single_task_long_confirmations",
+    "before_msgs": 155,
+    "after_msgs": 155,
+    "before_tokens": 24647,
+    "after_tokens": 13177,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "3/3 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.5346289609283077,
+        "target": 0.5,
+        "passed": false,
+        "detail": "13177/24647 tokens (53.5%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "snip not triggered (short conversation)"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "no snip, prompt at 78/155"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "old=True, new=True"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  },
+  {
+    "scenario": "S2_related_task_transition",
+    "before_msgs": 169,
+    "after_msgs": 154,
+    "before_tokens": 27265,
+    "after_tokens": 13160,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "2/2 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.48267008985879334,
+        "target": 0.5,
+        "passed": true,
+        "detail": "13160/27265 tokens (48.3%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "marker len=132"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "prompt at 77/154, marker at 1"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "old=True, new=True"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  },
+  {
+    "scenario": "S3_unrelated_task_transition",
+    "before_msgs": 184,
+    "after_msgs": 154,
+    "before_tokens": 29645,
+    "after_tokens": 13305,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "2/2 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.44881092933040984,
+        "target": 0.5,
+        "passed": true,
+        "detail": "13305/29645 tokens (44.9%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "marker len=128"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "prompt at 77/154, marker at 1"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "old=True, new=True"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  },
+  {
+    "scenario": "S4_multi_task_accumulation",
+    "before_msgs": 201,
+    "after_msgs": 156,
+    "before_tokens": 32258,
+    "after_tokens": 13433,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "3/3 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.4164238328476657,
+        "target": 0.5,
+        "passed": true,
+        "detail": "13433/32258 tokens (41.6%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "marker len=129"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "prompt at 79/156, marker at 1"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "old=True, new=True"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  },
+  {
+    "scenario": "S5_extreme_length_single_task",
+    "before_msgs": 302,
+    "after_msgs": 152,
+    "before_tokens": 49899,
+    "after_tokens": 13259,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "1/1 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.2657167478306178,
+        "target": 0.5,
+        "passed": true,
+        "detail": "13259/49899 tokens (26.6%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "marker len=133"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "sole pinned prompt at 0/152, marker at 1"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "single task"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  },
+  {
+    "scenario": "S6_mid_task_constraint_addition",
+    "before_msgs": 153,
+    "after_msgs": 153,
+    "before_tokens": 24871,
+    "after_tokens": 13276,
+    "metrics": [
+      {
+        "name": "Task Identity Preservation",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "2/2 prompts kept"
+      },
+      {
+        "name": "Pair Safety",
+        "value": 1.0,
+        "target": 0.0,
+        "passed": true,
+        "detail": "0 orphan head + 0 dangling"
+      },
+      {
+        "name": "Compression Ratio",
+        "value": 0.5337943789956174,
+        "target": 0.5,
+        "passed": false,
+        "detail": "13276/24871 tokens (53.4%)"
+      },
+      {
+        "name": "Context Block Integrity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "snip not triggered (short conversation)"
+      },
+      {
+        "name": "Current Task Focus",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "no snip, prompt at 76/153"
+      },
+      {
+        "name": "Task Transition",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "old=True, new=True"
+      },
+      {
+        "name": "Structural Validity",
+        "value": 1.0,
+        "target": 1.0,
+        "passed": true,
+        "detail": "valid"
+      }
+    ]
+  }
+]

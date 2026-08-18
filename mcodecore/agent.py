@@ -276,7 +276,7 @@ def _teammate_watcher(event_q: queue.Queue, stop: threading.Event) -> None:
     Signal (2) is checked independently of (1) because a teammate may
     still be running when it sends a plan_approval_request, and because
     the ``finally`` block sends orphan-release messages *after*
-    ``evt.set()`` ¡ª by which time ``_drain_inbox`` may have already
+    ``evt.set()`` â€” by which time ``_drain_inbox`` may have already
     popped the teammate from ``active_teammates``.
     """
     while not stop.is_set():
