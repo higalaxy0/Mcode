@@ -21,7 +21,25 @@ def build_system() -> str:
     catalog = list_skills()
     index = read_memory_index()
     memories_section = f"\n\nMemories available:\n{index}" if index else ""
-    return (
+    teammate_protocol = (
+        "\n\n## Teammate Protocol\n"
+        "- Teammates run in background threads. After spawning, continue your "
+        "own work; do NOT repeatedly call check_inbox - teammate results are "
+        "delivered to you automatically when they finish or need your input.\n"
+        "- Use teammate_status to check liveness/progress of teammates. "
+        "This does NOT consume messages.\n"
+        "- Use check_inbox only when you want to manually read messages.\n"
+        "- To dispatch a task: create_task, then tell the teammate what to do "
+        "via send_message. Do NOT send the same task to multiple channels.\n"
+        "- Only call request_shutdown when a teammate is genuinely stuck "
+        "(teammate_status shows no heartbeat update for a long time). "
+        "Premature shutdown discards in-progress work.\n"
+        "- A teammate's result arrives as a [result] message. One result "
+        "per teammate per work cycle.\n"
+        "- When you receive a [plan_approval_request] message, it includes a "
+        "request_id. Use review_plan with that request_id to approve or reject."
+    )
+    base = (
         f"You are a coding agent at {WORKDIR}.Act,don't explain."
         f"Skills available:\n{catalog}\n"
         "Use load_skill to get full details when needed."
@@ -31,11 +49,14 @@ def build_system() -> str:
         "Relevant memories are injected below. Respect user preferences from memory.\n"
         "When the user says 'remember' or expresses a clear preference, [REMEMBER:...] in your reply and the system automatically extracts it."
     )
+    # Teammate protocol guidance is always present so the LLM knows the
+    # rules even before spawning any teammate.
+    result = base + teammate_protocol
     # Append MCP status if any servers are connected
     mcp = ctx.mcp
     if mcp.is_connected:
-        system += f"\n\nMCP servers connected:\n{mcp.status()}"
-    return system
+        result += f"\n\nMCP servers connected:\n{mcp.status()}"
+    return result
 
 
 SUB_SYSTEM = (
@@ -252,6 +273,10 @@ TOOLS: list[dict] = SUB_TOOLS + [
         "parameters": {"type": "object", "properties": {
             "request_id": {"type": "string"}, "approve": {"type": "boolean"}, "feedback": {"type": "string"}},
             "required": ["request_id", "approve"]}}},
+    {"type": "function", "function": {
+        "name": "teammate_status",
+        "description": "Check liveness and progress of spawned teammates. Returns name, role, phase (working/idle_poll/finished), turns used, and seconds since last heartbeat. Use this instead of repeatedly calling check_inbox when waiting for teammates.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
 ]
 
 
@@ -334,6 +359,27 @@ def run_spawn_teammate(name: str, role: str, prompt: str) -> str:
     return spawn_teammate_thread(name, role, prompt)
 
 
+def run_teammate_status() -> str:
+    """Report liveness and progress of all spawned teammates."""
+    import time as _time
+    from .context import ctx
+    now = _time.time()
+    lines = []
+    for name, info in list(ctx.teammate_registry.items()):
+        role = info.get("role", "")
+        status = info.get("status", "running")
+        phase = info.get("phase", "unknown")
+        turns = info.get("turns_total", "?")
+        hb = info.get("last_heartbeat")
+        age = f"{now - hb:.0f}s ago" if hb else "never"
+        lines.append(
+            f"  - {name} ({role}) [{status}] phase={phase} "
+            f"turns={turns} last_heartbeat={age}")
+    if not lines:
+        return "(no teammates spawned)"
+    return "\n".join(lines)
+
+
 # Full handler mapping for the lead agent
 TOOL_HANDLERS: dict = {
     "bash": run_bash, "read_file": run_read, "write_file": run_write,
@@ -345,6 +391,7 @@ TOOL_HANDLERS: dict = {
     "get_task": run_get_task,
     "claim_task": run_claim_task, "complete_task": run_complete_task,
     "spawn_teammate": run_spawn_teammate,
+    "teammate_status": run_teammate_status,
     "send_message": None, "check_inbox": None,
     "request_shutdown": None, "request_plan": None, "review_plan": None,
 }

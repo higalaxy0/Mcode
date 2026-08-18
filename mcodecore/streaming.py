@@ -157,6 +157,38 @@ class StreamResponse:
 # stream_response
 # --------------------------------------------------------------------------- #
 
+def _cli_writer():
+    """Return a stdout-compatible writer tolerant of unencodable chars.
+
+    On Windows the console (or a piped stdout) often uses GBK; streamed
+    deltas containing emoji / rare CJK would raise UnicodeEncodeError.
+    Re-wrap stdout with errors="replace" (zero new dependencies).
+
+    The wrapper is cached at module level: a TextIOWrapper garbage-
+    collected after use would close the underlying stdout buffer and
+    crash later prints ("I/O operation on closed file").
+    """
+    import sys as _sys
+    import io as _io
+    global _CLI_WRITER
+    base = getattr(_sys.stdout, "buffer", None)
+    if _CLI_WRITER is not None and _CLI_WRITER[1] is base:
+        # Cached wrapper still bound to the live stdout buffer.
+        return _CLI_WRITER[0]
+    if base is not None and getattr(_sys.stdout, "encoding", "").lower().replace(
+            "-", "") in ("gbk", "gb2312", "gb18030", "cp936"):
+        w = _io.TextIOWrapper(base, encoding="gb18030",
+                              errors="replace", write_through=True)
+        _CLI_WRITER = (w, base)
+        return w
+    # Non-GBK (or no buffer, e.g. pytest's capture): use stdout as-is.
+    _CLI_WRITER = (_sys.stdout, base)
+    return _sys.stdout
+
+
+_CLI_WRITER = None
+
+
 def stream_response(**kwargs) -> StreamResponse:
     """Consume an OpenAI streaming response and aggregate it into a :class:`StreamResponse`.
 
@@ -182,6 +214,10 @@ def stream_response(**kwargs) -> StreamResponse:
         stream_usage = None
         try:
             stream = client.chat.completions.create(stream=True, **kwargs)
+            # CLI stream writer: same interface as sys.stdout but with
+            # errors="replace" so non-GBK-encodable deltas (emoji, rare
+            # CJK) never raise UnicodeEncodeError on Windows consoles.
+            out = _cli_writer()
             for chunk in stream:
                 if hasattr(chunk, "usage") and chunk.usage:
                     stream_usage = chunk.usage
@@ -191,10 +227,10 @@ def stream_response(**kwargs) -> StreamResponse:
                 if delta and delta.content:
                     content_parts.append(delta.content)
                     if not _cli_prefix_printed:
-                        sys.stdout.write("\nMcode: ")
+                        out.write("\nMcode: ")
                         sys.stdout.flush()
                         _cli_prefix_printed = True
-                    sys.stdout.write(delta.content)
+                    out.write(delta.content)
                     sys.stdout.flush()
                 if delta and delta.tool_calls:
                     for tc in delta.tool_calls:
@@ -211,7 +247,7 @@ def stream_response(**kwargs) -> StreamResponse:
                     finish_reason = chunk.choices[0].finish_reason
 
             if _cli_prefix_printed:
-                sys.stdout.write("\n")
+                out.write("\n")
                 sys.stdout.flush()
 
             # Detect interrupted / truncated stream: we accumulated partial
@@ -260,7 +296,7 @@ def stream_response(**kwargs) -> StreamResponse:
             if attempt < MAX_STREAM_RETRIES and classify_transient(e):
                 # Flush any partial output before retrying.
                 if _cli_prefix_printed:
-                    sys.stdout.write("\n")
+                    out.write("\n")
                     sys.stdout.flush()
                 delay = retry_after_seconds(e)
                 if delay is None:

@@ -8,12 +8,12 @@ import threading
 import time
 from pathlib import Path
 
-from .config import (LLM_MODEL, WORKDIR, client, TURN_BUDGET,
+from .config import (LLM_MODEL, WORKDIR, TEAM_HISTORY_DIR, client, TURN_BUDGET,
                      TURN_BUDGET_RENEWAL, TURN_BUDGET_HARD_CAP,
                      CLAIM_MIN_TURNS, CONTEXT_LIMIT, debug)
 from .context import ctx
 from .hooks import trigger_hooks
-from .bus import idle_poll, _teammate_submit_plan
+from .bus import idle_poll, _teammate_submit_plan, has_pending_plan_approval
 from .memory import read_memory_index, _load_memories_async, _await_memories
 from .streaming import classify_transient, retry_after_seconds, backoff_delay
 from .tasks import list_tasks, claim_task, complete_task, list_owned_inprogress, release_task
@@ -31,12 +31,15 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
               f"You can list and claim tasks from the board. "
               f"Check inbox for protocol messages. "
               f"Send results via send_message to 'lead'. "
+              f"When ALL your tasks are done and results sent, call the finish tool to exit cleanly. "
               f"OS is {platform.system()},ensure commands and file paths compatible with {platform.system()}.")
     _mem_index = read_memory_index()
     if _mem_index:
         system += f"\n\nMemories available:\n{_mem_index}"
     _TEAM_HISTORY_ENABLED = True
-    TEAM_HISTORY_DIR = WORKDIR / ".team_history"
+    # NOTE: history dir is the module-level TEAM_HISTORY_DIR imported from
+    # config (session-scoped); no local override needed.  Teammates from
+    # different mcode windows in the same folder write to disjoint files.
     _team_history_lock = threading.Lock()
 
     def log_team_history(teammate_name: str, event: str,
@@ -99,7 +102,8 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 {"type": "function", "function": {"name": "submit_plan", "description": "Submit a plan for Lead approval. You must own the task (task_id must be a task you have claimed).", "parameters": {"type": "object", "properties": {"plan": {"type": "string"}, "task_id": {"type": "string", "description": "The ID of the task this plan is for. Must be a task you have claimed."}}, "required": ["plan", "task_id"]}}},
                 {"type": "function", "function": {"name": "list_tasks", "description": "List all tasks with status, owner, and dependencies.", "parameters": {"type": "object", "properties": {"include_completed": {"type": "boolean", "description": "If true,include completed tasks in the listing."}}, "required": ["include_completed"]}}},
                 {"type": "function", "function": {"name": "claim_task", "description": "Claim a pending task.", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}},
-                {"type": "function", "function": {"name": "complete_task", "description": "Mark an in-progress task as completed.", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}}
+                {"type": "function", "function": {"name": "complete_task", "description": "Mark an in-progress task as completed.", "parameters": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"]}}},
+                {"type": "function", "function": {"name": "finish", "description": "Signal that your work is complete. Call this when you have finished all your tasks and sent your results to lead. This stops the agent immediately - do NOT call this if you still have work to do.", "parameters": {"type": "object", "properties": {"summary": {"type": "string", "description": "A brief summary of what you accomplished."}}, "required": ["summary"]}}}
             ]
 
             def _run_list_tasks(include_completed: bool = True):
@@ -121,6 +125,27 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             #     remaining turns < CLAIM_MIN_TURNS).
             turns_used = [0]
             turns_total = [0]
+            # Flag set by the finish tool handler so the main loop knows
+            # to exit immediately after the current turn (Fix #1).
+            _finished = [False]
+            # Track whether the teammate has done any real work (called
+            # at least one tool).  Used by the natural-stop heuristic
+            # (Fix #1): only exit early if work was actually done.  On
+            # the first turn with no tool calls, fall through to
+            # idle_poll so auto-claim can pick up available tasks.
+            _did_work = [False]
+
+            def _run_finish(summary: str) -> str:
+                """Handler for the finish tool: send result, request exit.
+
+                Sends the summary as a result message to lead immediately
+                and sets ``_finished[0]`` so the main loop breaks out
+                without entering ``idle_poll`` (which would block up to
+                360 s waiting for more work).  (Fix #1)
+                """
+                ctx.bus.send(name, "lead", summary, "result")
+                _finished[0] = True
+                return f"Finish acknowledged. Result delivered. Shutting down."
 
             def _run_claim_task(task_id: str):
                 # Fix #1C: refuse to claim if remaining turn budget
@@ -140,6 +165,20 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
             log_team_history(name, "spawned",
                              {"role": role}, TEAM_HISTORY_DIR)
 
+            def _heartbeat(phase: str = "working") -> None:
+                """Update registry liveness info (thread-safe via memory_lock).
+
+                Called after each turn, at idle_poll entry, and when
+                blocked on plan approval.  Lets the lead's
+                ``teammate_status`` tool distinguish "still working"
+                from "dead" so it does not panic on empty inboxes.
+                """
+                with ctx.memory_lock:
+                    if name in ctx.teammate_registry:
+                        ctx.teammate_registry[name]["last_heartbeat"] = time.time()
+                        ctx.teammate_registry[name]["phase"] = phase
+                        ctx.teammate_registry[name]["turns_total"] = turns_total[0]
+
             def _run_send_message(to, content):
                 ctx.bus.send(name, to, content)
                 return "Sent"
@@ -157,6 +196,7 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                 "list_tasks": _run_list_tasks,
                 "claim_task": _run_claim_task,
                 "complete_task": _run_complete_task,
+                "finish": _run_finish,
             }
 
             # Inject MCP tools if any server is connected
@@ -316,7 +356,15 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                 continue
                             handler = sub_handlers.get(tool_call.function.name)
                             args = parse_tool_args(tool_call.function.arguments)
-                            output = handler(**args) if handler else f"Unknown tool: {tool_call.function.name}"
+                            # Mirror the lead agent's error handling: any
+                            # tool exception is surfaced to the LLM as an
+                            # error string, NOT propagated to the outer
+                            # except (which would report "crashed" and
+                            # kill the teammate). (Fix #5)
+                            try:
+                                output = handler(**args) if handler else f"Unknown tool: {tool_call.function.name}"
+                            except Exception as _tool_err:
+                                output = f"Error: {_tool_err}"
                             # PostToolUse hook: wrap in try/except (tool already ran,
                             # result is kept even if hook crashes).
                             try:
@@ -331,9 +379,53 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                     # One LLM call consumed one turn (Fix #1A)
                     turns_used[0] += 1
                     turns_total[0] += 1
+                    _heartbeat("working")
+
+                    # Fix #1: Mark that the teammate has done real work
+                    # (at least one tool call this turn).  Used by the
+                    # natural-stop heuristic to distinguish "started and
+                    # finished" from "hasn't started yet".
+                    if assistant_message.tool_calls:
+                        _did_work[0] = True
 
                 if should_shutdown:
                     break
+
+                # Fix #1: If the teammate called the finish tool, exit
+                # immediately without entering idle_poll.  The result was
+                # already sent by _run_finish.
+                if _finished[0]:
+                    break
+
+                # Fix #1: If the LLM stopped naturally (no tool_calls,
+                # finish_reason != "tool_calls") AND has already done
+                # some work this session, AND there are no owned
+                # in_progress tasks, the work is likely done.  Entering
+                # idle_poll here would block up to 360 s for nothing.
+                # Skip idle_poll and deliver the result immediately.
+                # Exception 1: if there's a pending plan approval (the
+                # teammate called submit_plan and is waiting), we must
+                # stay alive in idle_poll to receive the response.
+                # Exception 2: if the teammate hasn't done any work yet
+                # (first turn, no tool calls), fall through to idle_poll
+                # so auto-claim can pick up available tasks.
+                _natural_stop = (turns_used[0] < TURN_BUDGET)
+                if _natural_stop and _did_work[0]:
+                    owned = list_owned_inprogress(name)
+                    if not owned:
+                        # Check for pending plan approval from this teammate
+                        if not has_pending_plan_approval(name):
+                            # Race guard: a protocol response (e.g. plan
+                            # approval) may already be sitting in our
+                            # mailbox even though pending_requests no
+                            # longer marks it pending (the lead flipped
+                            # the state when it reviewed).  Exiting now
+                            # would lose that message forever.  Peek
+                            # (non-destructive) and stay alive instead.
+                            if not ctx.bus.peek_inbox(name):
+                                debug(f"[teammate] {name} natural stop, "
+                                      f"no owned tasks, exiting")
+                                break
 
                 # Turn-budget renewal (Fix #1A): if we exhausted the soft
                 # cap but still own in_progress tasks, grant more turns
@@ -352,11 +444,29 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
                                          TEAM_HISTORY_DIR)
                         continue  # re-enter inner while with renewed budget
 
+                _heartbeat("idle_poll")
                 idle_result = idle_poll(name, messages, name, role)
                 if idle_result == "shutdown":
                     break
                 if idle_result == "timeout":
                     break
+                # Fix #9: idle_poll returned "work" (a lead instruction or
+                # dependency-ready notification arrived).  The inner loop
+                # exited because turns_used was exhausted.  If we don't
+                # reset the budget here, the renewed budget check above
+                # only triggers for *owned* tasks - a lead instruction
+                # with no owned tasks would be silently lost (loop back,
+                # turns_used still >= TURN_BUDGET, idle_poll on empty
+                # inbox -> timeout).  Reset the soft budget (capped by
+                # the hard cap) so the teammate can act on the new work.
+                if idle_result == "work" and turns_total[0] < TURN_BUDGET_HARD_CAP:
+                    renewal = min(TURN_BUDGET_RENEWAL,
+                                  TURN_BUDGET_HARD_CAP - turns_total[0])
+                    turns_used[0] = max(0, TURN_BUDGET - renewal)
+                    log_team_history(name, "idle_work_renewal",
+                                     {"turns_total": turns_total[0],
+                                      "renewed": renewal},
+                                     TEAM_HISTORY_DIR)
                 # Guard against infinite loop when the hard cap is reached
                 # but idle_poll still returns "work" (e.g. the worker owns
                 # in_progress tasks).  Without renewal budget left, looping
@@ -446,10 +556,14 @@ def spawn_teammate_thread(name: str, role: str, prompt: str) -> str:
         "role": role,
         "spawned_at": time.time(),
         "status": "running",
+        "phase": "starting",
+        "last_heartbeat": time.time(),
+        "turns_total": 0,
     }
     threading.Thread(target=run, daemon=True).start()
     print(f"  \033[36m[teammate] {name} spawned as {role}\033[0m")
     return (f"Teammate '{name}' spawned as {role}. "
-            f"The teamagent runs in the background - you do not need to wait for it to finish. "
-            f"The teamagent will notify you via events (check check_inbox for messages) "
-            f"when it needs your input (e.g. plan approval) or when it has completed its work.")
+            f"The teamagent runs in the background. "
+            f"You do not need to poll - its results will be delivered to you "
+            f"automatically when it finishes or needs your input. "
+            f"Use teammate_status to check its liveness/progress.")

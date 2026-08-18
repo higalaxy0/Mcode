@@ -9,7 +9,8 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .config import MAILBOX_DIR, WORKDIR, IDLE_POLL_INTERVAL, IDLE_TIMEOUT, debug
+from .config import (MAILBOX_DIR, WORKDIR, SESSION_ID, IDLE_POLL_INTERVAL,
+                     IDLE_TIMEOUT, debug)
 from .context import ctx
 from .tasks import scan_unclaimed_tasks, claim_task, list_owned_inprogress
 from .utils import new_request_id
@@ -18,7 +19,9 @@ from .utils import new_request_id
 class MessageBus:
     """In-process message bus backed by JSONL files.
 
-    Each agent owns a ``.mailboxes/<name>.jsonl`` inbox.
+    Each agent owns a ``.mailboxes/<SESSION_ID>/<name>.jsonl`` inbox
+    (session-scoped, so multiple mcode windows in the same folder never
+    share or steal each other's mail).
     ``read_inbox`` uses atomic rename to avoid concurrent duplicate reads.
     """
 
@@ -53,7 +56,11 @@ class MessageBus:
         # ours after a successful rename.
         with self._io_lock:
             self._read_counter += 1
-            tmp = MAILBOX_DIR / f"{agent}.jsonl.reading_{self._read_counter}"
+            # Embed SESSION_ID in the temp name so two mcode processes in
+            # the same folder can never target the same temp file (the
+            # counter restarts at 1 in every process).
+            tmp = MAILBOX_DIR / (f"{agent}.jsonl.reading_"
+                                 f"{SESSION_ID}_{self._read_counter}")
             try:
                 inbox.rename(tmp)
             except FileNotFoundError:
@@ -61,19 +68,57 @@ class MessageBus:
             except OSError as e:
                 debug(f"[bus] read_inbox rename failed for {agent}: {e}")
                 return []
-        lines = tmp.read_text(encoding="utf-8").splitlines()
+        # Parse the renamed temp file.  All three steps (read, parse,
+        # unlink) are in a try/finally so that even if read_text raises
+        # (Windows AV file-lock, disk-full, permission error) the temp
+        # file is always cleaned up and we never lose messages - on
+        # decode failure we fall back to errors="replace" so partial
+        # lines are salvaged rather than silently dropped.
         msgs = []
-        for line in lines:
+        try:
+            try:
+                raw = tmp.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                raw = tmp.read_text(encoding="utf-8", errors="replace")
+            for line in raw.splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    msgs.append(json.loads(line))
+                except json.JSONDecodeError:
+                    debug(f"[bus] skipping corrupted inbox line for {agent}: {line[:80]}")
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+        return msgs
+
+
+    def peek_inbox(self, agent: str) -> list[dict]:
+        """Non-destructively read *agent*'s inbox (does not clear it).
+
+        Used by the teammate main loop's natural-stop heuristic: if any
+        message (e.g. a plan_approval_response already delivered but not
+        yet consumed) is still sitting in the mailbox, the teammate must
+        NOT exit - otherwise the message would be lost forever.  Holds
+        ``_io_lock`` so no writer can be mid-append while we read (a
+        partial last line is therefore impossible).
+        """
+        inbox = MAILBOX_DIR / f"{agent}.jsonl"
+        with self._io_lock:
+            try:
+                raw = inbox.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return []
+        msgs = []
+        for line in raw.splitlines():
             if not line.strip():
                 continue
             try:
                 msgs.append(json.loads(line))
             except json.JSONDecodeError:
-                debug(f"[bus] skipping corrupted inbox line for {agent}: {line[:80]}")
-        try:
-            tmp.unlink()
-        except FileNotFoundError:
-            pass
+                continue
         return msgs
 
 
@@ -108,6 +153,27 @@ def match_response(response_type: str, request_id: str, approve: bool) -> None:
     color = "32" if approve else "31"
     print(f"  \033[{color}m[protocol] {state.type} {icon} "
           f"({request_id}: {state.status})\033[0m")
+
+
+def format_inbox_msg(m: dict) -> str:
+    """Render one inbox message for LLM consumption.
+
+    Shared by ``run_check_inbox`` (tool channel) and ``_drain_inbox``
+    (auto-inject channel) so a message is represented identically
+    whichever path delivers it.  Critically preserves
+    ``metadata.request_id`` / ``task_id`` and the message ``type``,
+    which ``review_plan`` depends on.
+    """
+    meta = m.get("metadata", {}) or {}
+    req_id = meta.get("request_id", "")
+    task_id = meta.get("task_id", "")
+    tag = f"[{m.get('type', 'message')}"
+    if req_id:
+        tag += f" req:{req_id}"
+    if task_id:
+        tag += f" task:{task_id}"
+    tag += "]"
+    return f"[{m.get('from', '?')}]{tag} {m.get('content', '')}"
 
 
 def consume_lead_inbox(route_protocol: bool = True) -> list[dict]:
@@ -316,6 +382,42 @@ def run_review_plan(request_id: str, approve: bool, feedback: str = "") -> str:
     return f"Plan {'approved' if approve else 'rejected'} ({request_id})"
 
 
+def has_pending_plan_approval(sender: str) -> bool:
+    """Check whether *sender* (a teammate) has an unresolved plan approval.
+
+    Used by the teammate main loop (Fix #1) to decide whether to stay
+    alive in ``idle_poll`` or exit on a natural stop.  If the teammate
+    submitted a plan and is waiting for the lead's ``review_plan``, it
+    must not exit.
+    """
+    with _requests_lock:
+        return any(
+            s.sender == sender
+            and s.type == "plan_approval"
+            and s.status == "pending"
+            for s in ctx.pending_requests.values())
+
+
+def get_pending_plan_approvals() -> list[dict]:
+    """Return all unresolved plan approval requests (Fix #3).
+
+    Used by the lead ``agent_loop`` to re-inject reminders so the lead
+    never forgets a pending plan approval after compaction or a long
+    tool sequence.  Returns a list of dicts with request_id, sender,
+    and a short summary.
+    """
+    result = []
+    with _requests_lock:
+        for req_id, state in ctx.pending_requests.items():
+            if state.type == "plan_approval" and state.status == "pending":
+                result.append({
+                    "request_id": req_id,
+                    "sender": state.sender,
+                    "summary": (state.payload or "")[:200],
+                })
+    return result
+
+
 def run_send_message(to: str, content: str) -> str:
     """Lead sends a message to a teammate."""
     ctx.bus.send("lead", to, content)
@@ -323,17 +425,15 @@ def run_send_message(to: str, content: str) -> str:
 
 
 def run_check_inbox(include_read: bool = False) -> str:
-    """Lead checks the inbox."""
+    """Lead checks the inbox.
+
+    Messages are returned in full - truncating here permanently loses data
+    because ``consume_lead_inbox`` atomically clears the inbox.
+    """
     if isinstance(include_read, str):
         include_read = include_read.strip().lower() == "true"
     include_read = bool(include_read)
     msgs = consume_lead_inbox(route_protocol=True)
     if not msgs:
         return "(inbox empty)"
-    lines = []
-    for m in msgs:
-        meta = m.get("metadata", {})
-        req_id = meta.get("request_id", "")
-        tag = f"  [{m['type']} req:{req_id}]" if req_id else f"  [{m['type']}]"
-        lines.append(f"  [{m['from']}]{tag} {m['content'][:200]}")
-    return "\n".join(lines)
+    return "\n".join(f"  {format_inbox_msg(m)}" for m in msgs)

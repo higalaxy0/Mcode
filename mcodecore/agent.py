@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
+import queue
 import threading
+import time
 
 from .config import (LLM_MODEL, MAX_REACTIVE_RETRIES, CONTEXT_LIMIT, client, _enable_ansi, debug)
 from .context import ctx
@@ -14,9 +16,18 @@ from .streaming import stream_response, classify_transient, retry_after_seconds,
 from .compact import (estimate_tokens_messages, tool_result_budget, snip_compact,
                       micro_compact, compact_history, reactive_compact)
 from .memory import _load_memories_async, _await_memories, _post_turn_memory
-from .bus import consume_lead_inbox
+from .bus import consume_lead_inbox, format_inbox_msg, get_pending_plan_approvals
 from .tools import build_system, TOOLS, TOOL_HANDLERS
 from .utils import sanitize_messages, sanitize_message, parse_tool_args
+
+# -- Event-driven REPL timing constants ----------------------------------------
+# Teammate watcher poll interval (seconds).  Trades latency for I/O cost;
+# 0.5s means a teammate result is surfaced within ~0.5s of completion.
+_WATCHER_INTERVAL = 0.5
+# Main-loop ``queue.get`` timeout (seconds).  Must be short enough that
+# Ctrl+C on Windows is reliably caught (unbounded ``get`` can swallow it)
+# but long enough to avoid busy-spinning.  0.5s is a good balance.
+_REPL_POLL_INTERVAL = 0.5
 
 
 def agent_loop(messages: list) -> None:
@@ -34,7 +45,32 @@ def agent_loop(messages: list) -> None:
     reactive_retries = 0
     _mem_holder = _load_memories_async(messages)
     memory_turn = len(messages) - 1 if messages and isinstance(messages[-1].get("content"), str) else None
+
+    # Fix #2: Stall detector.  Track consecutive turns where the ONLY
+    # tools called are polling tools (check_inbox, teammate_status).
+    # After STALL_MAX consecutive polling-only turns, force a natural
+    # stop so the lead doesn't busy-loop forever while waiting for
+    # teammates that may have already finished or crashed.
+    STALL_MAX = 3
+    _polling_only_streak = 0
+    _POLLING_TOOLS = {"check_inbox", "teammate_status"}
+
     while True:
+        # Fix #3: Re-inject pending plan approvals as reminders.  If a
+        # teammate submitted a plan that the lead hasn't acted on (e.g.
+        # after compaction or a long tool sequence), the original
+        # plan_approval_request may have been consumed from the inbox
+        # and lost.  Re-inject a reminder so the lead can never forget.
+        _pending_plans = get_pending_plan_approvals()
+        if _pending_plans:
+            reminders = "\n".join(
+                f"  - Request {r['request_id']} from {r['sender']}: "
+                f"{r['summary']}" for r in _pending_plans)
+            messages.append({"role": "user",
+                             "content": f"[Reminder] You have "
+                             f"{len(_pending_plans)} pending plan approval(s) "
+                             f"awaiting your review. Use review_plan to "
+                             f"approve or reject:\n{reminders}"})
         SYSTEM = build_system()
         pre_compress = copy.deepcopy(messages)
         api_messages = copy.deepcopy(messages)
@@ -45,7 +81,7 @@ def agent_loop(messages: list) -> None:
             debug(f"[auto compact, context size = {estimate_tokens_messages(api_messages)}]")
             api_messages[:] = compact_history(api_messages)
         messages[:] = copy.deepcopy(api_messages)
-        print("\033[1;32m\nagent: thinking!\033[0m")
+        debug("agent: thinking!")
         try:
             request_messages = api_messages.copy()
             request_messages.insert(0, {"role": "system", "content": SYSTEM})
@@ -145,6 +181,30 @@ def agent_loop(messages: list) -> None:
             print(f"{tool_call.function.name}:{str(output)[:300]}")
             messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": output})
 
+        # Fix #2: Stall detector.  Check whether ALL tools called this
+        # turn were polling-only (check_inbox, teammate_status).  If so,
+        # increment the streak; otherwise reset.  When the streak reaches
+        # STALL_MAX, inject a force-stop message.  If the LLM still
+        # polls after being told to stop (streak > STALL_MAX), force a
+        # hard return so the REPL regains control.
+        _tools_this_turn = {tc.function.name for tc in (assistant_message.tool_calls or [])}
+        if _tools_this_turn and _tools_this_turn.issubset(_POLLING_TOOLS):
+            _polling_only_streak += 1
+        else:
+            _polling_only_streak = 0
+        if _polling_only_streak == STALL_MAX:
+            debug(f"[stall detector] {STALL_MAX} consecutive polling-only "
+                  f"turns, injecting stop guidance")
+            messages.append({"role": "user",
+                             "content": "[System] You have been polling "
+                             "repeatedly without taking action. If you are "
+                             "waiting for teammates, they may have finished "
+                             "or encountered issues. Stop and summarize "
+                             "the current state for the user."})
+        elif _polling_only_streak > STALL_MAX:
+            debug(f"[stall detector] LLM ignored stop guidance, forcing return")
+            return
+
 
 def _run_agent_turn(history: list) -> bool:
     """Run one iteration of agent_loop; return whether the REPL should exit."""
@@ -172,42 +232,191 @@ def _drain_inbox(history: list) -> bool:
     inbox_msgs = consume_lead_inbox(route_protocol=True)
     if not inbox_msgs:
         return False
-    inbox_text = "\n".join(f"From {m['from']}: {m['content']}" for m in inbox_msgs)
+    inbox_text = "\n".join(format_inbox_msg(m) for m in inbox_msgs)
     history.append({"role": "user", "content": f"[Inbox]\n{inbox_text}"})
     debug(f"\n[Inbox: {len(inbox_msgs)} messages injected]")
     return _run_agent_turn(history)
 
 
+# -- Event-driven REPL infrastructure ------------------------------------------
+
+# REPL prompt string (cyan).  Rendered without a trailing newline.
+_PROMPT = "\033[36mMcode >> \033[0m"
+
+
+def _print_prompt() -> None:
+    """Render the REPL prompt at the current cursor position (no newline).
+
+    Extracted as a helper so tests can intercept prompt rendering and
+    assert its ordering relative to agent turns.
+    """
+    print(_PROMPT, end="", flush=True)
+
+def _lead_mailbox_has_messages() -> bool:
+    """Non-destructive check: is there anything in lead's mailbox?"""
+    from .config import MAILBOX_DIR
+    inbox = MAILBOX_DIR / "lead.jsonl"
+    try:
+        return inbox.exists() and inbox.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def _teammate_watcher(event_q: queue.Queue, stop: threading.Event) -> None:
+    """Background thread: detect teammate completion / pending inbox messages.
+
+    Polls every ``_WATCHER_INTERVAL`` seconds.  Two independent signals
+    trigger a ``("teammate", None)`` event:
+
+    1. Any entry in ``ctx.active_teammates`` whose ``Event`` is set
+       (teammate finished its run).
+    2. Lead's mailbox JSONL is non-empty (a teammate sent a result,
+       crashed message, or plan_approval_request mid-work).
+
+    Signal (2) is checked independently of (1) because a teammate may
+    still be running when it sends a plan_approval_request, and because
+    the ``finally`` block sends orphan-release messages *after*
+    ``evt.set()`` ¡ª by which time ``_drain_inbox`` may have already
+    popped the teammate from ``active_teammates``.
+    """
+    while not stop.is_set():
+        time.sleep(_WATCHER_INTERVAL)
+        if stop.is_set():
+            break
+        # Signal 1: finished teammates
+        for name, evt in list(ctx.active_teammates.items()):
+            if evt.is_set():
+                event_q.put(("teammate", None))
+                break
+        # Signal 2: pending inbox messages (independent of signal 1)
+        if _lead_mailbox_has_messages():
+            event_q.put(("teammate", None))
+
+
+def _input_reader(event_q: queue.Queue, stop: threading.Event) -> None:
+    """Background thread: read stdin lines and push to the event queue.
+
+    ``input()`` blocks the calling thread; running it here lets the
+    main loop stay responsive to teammate events via ``event_q.get``.
+
+    The prompt is NOT printed here (plain ``input()``, no argument).
+    The main loop owns prompt rendering (via ``_print_prompt``): it
+    prints the prompt only when the REPL is idle.  If this thread
+    printed the prompt itself, it would re-print it immediately after
+    each Enter - BEFORE the agent's output - causing two known
+    display bugs:
+
+    1. A spurious/blank prompt line appearing right after Enter
+       (the pre-mature prompt gets buried under agent output);
+    2. No prompt visible after the agent finishes a task (the buried
+       prompt is the one blocking ``input()``, so nothing fresh is
+       ever printed again).
+    """
+    while not stop.is_set():
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            event_q.put(("quit", None))
+            return
+        event_q.put(("input", line))
+
+
 def main() -> None:
-    """REPL main entry."""
+    """REPL main entry (event-driven)."""
     _enable_ansi()
-    # Initialize MCP (connect to all configured servers)
     from .mcp import init_mcp
     init_mcp()
     from .tools import _inject_mcp_tools
     _inject_mcp_tools()
     print("Enter a question, press Enter to send. Type q to quit.\n")
-    history = []
+
+    # Fix #8: Startup orphan sweep.  Release in_progress tasks left by
+    # teammates from a previous session (daemon threads are killed on
+    # exit without running their finally block).  Without this, such
+    # tasks remain stuck.  Task board is session-scoped
+    # (``.tasks/<SESSION_ID>``), so this only ever touches THIS session's
+    # tasks and can no longer release another window's in-progress work.
+    from .tasks import release_orphaned_tasks
+    _released = release_orphaned_tasks(set(ctx.active_teammates))
+    if _released:
+        print(f"  \033[33m[orphan-sweep] released {_released} orphaned "
+              f"task(s) from previous session\033[0m")
+
+    # Multi-window fix: quarantine leftover flat mailbox files from
+    # pre-session-scoped versions so this session can never consume (steal)
+    # another window's undelivered mail.
+    from .config import quarantine_legacy_mailboxes
+    _moved = quarantine_legacy_mailboxes()
+    if _moved:
+        print(f"  \033[33m[mail-quarantine] moved {_moved} legacy mailbox "
+              f"file(s) to .mailboxes/orphan/\033[0m")
+
+    history: list = []
+    event_q: queue.Queue = queue.Queue()
+    stop = threading.Event()
+
+    watcher = threading.Thread(
+        target=_teammate_watcher, args=(event_q, stop),
+        daemon=True, name="teammate-watcher")
+    reader = threading.Thread(
+        target=_input_reader, args=(event_q, stop),
+        daemon=True, name="input-reader")
+    watcher.start()
+    reader.start()
+
+    _prompt_shown = False
     while True:
+        if not _prompt_shown:
+            _print_prompt()
+            _prompt_shown = True
         try:
-            query = input("\033[36mMcode >> \033[0m")
-        except (EOFError, KeyboardInterrupt):
+            # Bounded timeout so Ctrl+C (KeyboardInterrupt) is reliably
+            # caught on Windows where an unbounded ``queue.get`` can
+            # swallow the signal.
+            kind, data = event_q.get(timeout=_REPL_POLL_INTERVAL)
+        except queue.Empty:
+            continue
+        except KeyboardInterrupt:
             break
-        if query is None:
+
+        if kind == "quit":
+            break
+
+        if kind == "input":
+            query = data
+            if query.strip().lower() in ("q", "exit", "quit"):
+                break
+            if not query.strip():
+                # Empty line: still check inbox (preserves old behaviour).
+                # The consumed Enter moved the cursor to a fresh line, so
+                # the prompt must be re-rendered.
+                _prompt_shown = False
+                if _drain_inbox(history):
+                    break
+                continue
+            trigger_hooks("UserPromptSubmit", query)
+            history.append({"role": "user", "content": query})
+            # Agent output follows on fresh lines; re-render the prompt
+            # once the turn finishes and the queue goes idle.
+            _prompt_shown = False
+            if _run_agent_turn(history):
+                break
             if _drain_inbox(history):
                 break
-            continue
-        if query.strip().lower() in ("q", "exit", "quit"):
-            break
-        if not query.strip():
-            continue
-        trigger_hooks("UserPromptSubmit", query)
-        history.append({"role": "user", "content": query})
-        if _run_agent_turn(history):
-            break
-        if _drain_inbox(history):
-            break
-    # Shut down MCP sessions on exit
+
+        elif kind == "teammate":
+            # Re-render the prompt only if the drain actually consumed
+            # mailbox messages (which implies agent output on fresh
+            # lines).  A teammate-finished signal with an empty mailbox
+            # produces no output; re-printing then would stack prompts
+            # on one line ("Mcode >> Mcode >> ").
+            _dirty = _lead_mailbox_has_messages()
+            if _drain_inbox(history):
+                break
+            if _dirty:
+                _prompt_shown = False
+
+    stop.set()
     from .mcp import shutdown_mcp
     shutdown_mcp()
 

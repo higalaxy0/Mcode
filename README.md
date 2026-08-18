@@ -3,7 +3,7 @@ Mcode — Coding Agent
 
 ## 目录
 
-- [Mcode — Coding Agent 核心架构文档](#mcode--coding-agent-核心架构文档)
+- [Mcode — Coding Agent 核心架构文档](#mcode)
   - [目录](#目录)
   - [项目总览](#项目总览)
   - [项目亮点](#项目亮点)
@@ -15,13 +15,15 @@ Mcode — Coding Agent
       - [知识工具（1 个，仅 Lead）](#知识工具1-个仅-lead)
       - [工具调度与注入机制](#工具调度与注入机制)
     - [3. 文件总线 + 原子重命名 + 线程安全锁——零依赖的跨线程通信](#3-文件总线--原子重命名--线程安全锁零依赖的跨线程通信)
-    - [4. 多 agent 协作全链路——协议状态机 / 轮次预算 / 并发安全](#4-多-agent-协作全链路协议状态机--轮次预算--并发安全)
-    - [5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#5-mcp-异步核心--同步门面让异步-sdk-无缝融入同步代码库)
-    - [6. 全链路防御性编程 + 瞬时错误恢复——"不崩溃"是底线](#6-全链路防御性编程--瞬时错误恢复不崩溃是底线)
-    - [7. 路径沙箱 + 命令拦截——双重安全屏障](#7-路径沙箱--命令拦截双重安全屏障)
-    - [8. 后台线程记忆系统——"边聊边学"且零阻塞](#8-后台线程记忆系统边聊边学且零阻塞)
-    - [9. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#9-流式响应聚合--sdk-解耦不绑死-pydantic)
-    - [10. 延迟导入打破循环依赖——包加载顺序无关](#10-延迟导入打破循环依赖包加载顺序无关)
+    - [4. 会话作用域隔离——多窗口互不干扰的运行时命名空间](#4-会话作用域隔离多窗口互不干扰的运行时命名空间)
+    - [5. 事件驱动 REPL——输入与队友事件合流](#5-事件驱动-repl输入与队友事件合流)
+    - [6. 多 agent 协作全链路——协议状态机 / 轮次预算 / 并发安全](#6-多-agent-协作全链路协议状态机--轮次预算--并发安全)
+    - [7. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库](#7-mcp-异步核心--同步门面让异步-sdk-无缝融入同步代码库)
+    - [8. 全链路防御性编程 + 瞬时错误恢复——"不崩溃"是底线](#8-全链路防御性编程--瞬时错误恢复不崩溃是底线)
+    - [9. 路径沙箱 + 命令拦截——双重安全屏障](#9-路径沙箱--命令拦截双重安全屏障)
+    - [10. 后台线程记忆系统——"边聊边学"且零阻塞](#10-后台线程记忆系统边聊边学且零阻塞)
+    - [11. 流式响应聚合 + SDK 解耦——不绑死 pydantic](#11-流式响应聚合--sdk-解耦不绑死-pydantic)
+    - [12. 延迟导入打破循环依赖——包加载顺序无关](#12-延迟导入打破循环依赖包加载顺序无关)
   - [目录结构](#目录结构)
   - [架构总览](#架构总览)
   - [分层依赖关系](#分层依赖关系)
@@ -50,7 +52,7 @@ Mcode — Coding Agent
     - [3. 三级渐进式压缩](#3-三级渐进式压缩)
     - [4. 文件总线而非内存队列](#4-文件总线而非内存队列)
     - [5. 薄 shim 保持兼容](#5-薄-shim-保持兼容)
-    - [6. MCP 异步核心 + 同步门面](#6-mcp-异步核心-同步门面)
+    - [6. MCP 异步核心 + 同步门面](#6-mcp-异步核心--同步门面)
     - [7. 记忆时效性管理](#7-记忆时效性管理)
     - [8. 确定性去重](#8-确定性去重)
     - [9. 记忆原子合并](#9-记忆原子合并)
@@ -69,7 +71,7 @@ Mcode — Coding Agent
 - **记忆系统**：自动提取、检索、合并用户偏好/项目事实，注入对话。
 - **技能系统**：Markdown 技能文件热加载，按需检索。
 - **任务看板**：多 agent 协作的持久化任务依赖图。
-- **多 agent 协作**：同步子 agent（subagent）+ 线程化队友 agent（teammate）+ 消息总线 + 协议状态机 + 轮次预算（防止任务丢弃与无限循环）。
+- **多 agent 协作**：同步子 agent（subagent）+ 线程化队友 agent（teammate）+ 消息总线 + 协议状态机 + 轮次预算（防止任务丢弃与无限循环）；配套会话作用域隔离（亮点 4）、事件驱动 REPL（亮点 5）与生命周期治理（亮点 6.5）。
 - **全链路防御 + 瞬时错误恢复**：边界容错（畸形 JSON / 空响应 / 截断流不崩溃）+ LLM API 瞬时错误（429/5xx/连接错误/超时）指数退避重试。
 - **记忆合并门控**：数量/时间冷却/活跃度/跨进程锁四层门控 + 硬上限强制合并，避免过频合并浪费 LLM 调用。
 - **静默模式**：`MCODE_VERBOSE` 环境变量控制调试输出，`debug()` 替代散落的 `print`。
@@ -195,7 +197,42 @@ def read_inbox(self, agent: str) -> list[dict]:
 
 **线程安全锁**：单一 `_io_lock` 同时保护 `send` 的文件追加和 `read_inbox` 的原子重命名，确保同一收件箱的读写互斥、并发写之间序列化。JSON 解析在锁外执行以缩小锁粒度，跨平台行为一致。
 
-### 4. 多 agent 协作全链路——协议状态机 / 轮次预算 / 并发安全
+**读取全程兜底**：temp 文件的 read / parse / unlink 包裹在 `try/finally` 中——即使 `read_text` 抛出（Windows AV 文件锁、磁盘满、权限错误）也保证 temp 清理、消息不丢；UTF-8 解码失败降级 `errors="replace"` 抢救部分行，单行 JSON 损坏跳过并 debug 告警而非整体失败。
+
+**非破坏性读取 `peek_inbox`**：持 `_io_lock` 读但不清空，保证读时不可能有 writer 正在追加（杜绝半行）。供 teammate 自然停止启发式做竞态护栏——邮箱里还有未消费消息（如已投递但未读的 plan 审批响应）时绝不退出，否则消息将永久丢失。
+
+### 4. 会话作用域隔离——多窗口互不干扰的运行时命名空间
+
+同一个文件夹里开多个 mcode 窗口，旧版会共享一套平铺的磁盘命名空间（`.mailboxes/lead.jsonl`、`.tasks/`、`.team_history/`），互相偷消息（`read_inbox` 靠 rename 消费）和偷任务（孤儿清扫/认领竞态）。修复方式是**让干扰在结构上不可能发生**：
+
+- **`SESSION_ID`**：每个 mcode 进程唯一（`s_` + uuid 8 位 hex；环境变量 `MCODE_SESSION_ID` 可固定，供测试/复现用）。
+- **会话分目录**：`TASKS_DIR = .tasks/<SESSION_ID>`、`MAILBOX_DIR = .mailboxes/<SESSION_ID>`、`TEAM_HISTORY_DIR = .team_history/<SESSION_ID>`。一个团队（lead + teammates）永远活在同一个进程里。
+- **temp 文件名隔离**：`read_inbox` 的 temp 名嵌入 SESSION_ID（`<agent>.jsonl.reading_<SID>_<n>`），两个进程的 `_read_counter` 都从 1 起数也不会指向同一 temp 文件。
+- **全局唯一请求 ID**：`new_request_id` 返回 `req_<SESSION_ID>_<uuid8>`，跨进程永不碰撞，避免 `match_response` 解析到错误的 `pending_requests` 条目。
+- **旧邮箱隔离 `quarantine_legacy_mailboxes()`**：启动时把旧版遗留的平铺 `.jsonl`（和过期 `.reading_*` temp）移入 `.mailboxes/orphan/`，当前会话永不消费别的窗口的未送达邮件；同名 orphan 计数后缀共存，不覆盖。
+- **启动孤儿清扫 `release_orphaned_tasks()`**：REPL 启动时释放 owner 不在当前活跃队友集合中的 in_progress 任务（daemon 线程退出时不执行 finally）。任务板已按会话分目录，只会触及本会话的任务。
+
+> 记忆目录 `.memory/`、transcript 等仍为全局共享——它们是"项目级"数据，跨会话累积正是期望语义。
+
+### 5. 事件驱动 REPL——输入与队友事件合流
+
+旧 REPL 是阻塞 `input()` 循环：用户等队友结果只能反复敲回车；而 teammate 发来的 result 消息可能埋在邮箱里没人读。新版将两个事件源合流到单一事件队列：
+
+```
+main loop (主线程)
+  ├─ input-reader 线程: input() 阻塞读 stdin -> ("input", line)
+  ├─ teammate-watcher 线程: 0.5s 轮询
+  │    ① active_teammates 中任一 Event 已 set（队友完成）
+  │    ② lead 邮箱 JSONL 非空（result / crashed / plan_approval_request）
+  │    -> ("teammate", None)
+  └─ event_q.get(timeout=0.5)  # bounded wait, reliable Ctrl+C on Windows
+```
+
+- **结果自动送达**：`("teammate", ...)` 事件触发 `_drain_inbox` -> 邮箱消息注入 history -> 自动跑一轮 agent turn，用户无需任何操作。
+- **无界 `queue.get` 会吞 Ctrl+C**（Windows 已知坑）：0.5s 有界超时 + `KeyboardInterrupt` 捕获，退出可靠。
+- **prompt 渲染时序**：`_print_prompt()` 只在 REPL 空闲时渲染（主循环独占，reader 线程用无参 `input()`）。修复两类显示 bug——Enter 后出现多余空 prompt 行、agent 输出结束后再也看不到 prompt。teammate 信号仅在邮箱确实有消息被消费时才重绘 prompt，避免 `Mcode >> Mcode >> ` 叠行。
+
+### 6. 多 agent 协作全链路——协议状态机 / 轮次预算 / 并发安全
 
 Mcode 构建了 **Lead → Subagent → Teammate** 三级 agent 体系，辅以**任务看板依赖图**和**请求/响应协议状态机**，实现真正的多 agent 工程协作：
 
@@ -211,7 +248,7 @@ Lead Agent (主线程 REPL)
 
 协议状态机覆盖两类交互：**计划审批**（teammate 提交 plan → lead approve/reject → 结果回传）和**优雅关停**（lead 发 shutdown_request → teammate 确认后退出）。每步都有 `ProtocolState` 跟踪、类型校验（`match_response` 拒绝不匹配的响应类型）、状态幂等检查（已处理的请求不再重复处理）。
 
-#### 4.1 轮次预算（Turn-Budget）
+#### 6.1 轮次预算（Turn-Budget）
 
 多 agent 场景下 teammate 可能因上下文压缩、工具异常等长时间占用轮次，导致任务饥饿或认领后无轮次完成。Mcode 用四个常量构成三层保护：
 
@@ -226,13 +263,16 @@ Lead Agent (主线程 REPL)
 - **软上限续命**--轮次达 `TURN_BUDGET` 后若仍持有 in_progress 任务，续命 `TURN_BUDGET_RENEWAL`（不超硬上限）。
 - **硬上限兜底**--轮次达 `TURN_BUDGET_HARD_CAP` 后强制退出并 `release_task` 释放孤儿任务，防 idle_poll 死循环。
 
-#### 4.2 并发安全与所有权保障
+#### 6.2 并发安全与所有权保障
 
 多线程并发、文件共享、异步消息环境下容易出现竞态、丢消息、任务孤儿等问题。Mcode 在全链路上提供系统性保障：
 
 | 保障点 | 实现 |
 |------|------|
-| TOCTOU 竞态 | `claim_task`/`complete_task`/`release_task` 全部加 `_task_lock`（复用 `memory_lock`），消除 load-check-save 竞态 |
+| TOCTOU 竞态 | `claim_task`/`complete_task`/`release_task` 全部加 `_task_lock`，消除 load-check-save 竞态 |
+| 锁选型 | `_task_lock` 是**独立锁**，刻意不复用 `memory_lock`——后者在 `_post_turn_memory` 中跨长 LLM 调用被持有（最长约 180s），共享会让每次 claim/release/complete 卡到记忆提取结束 |
+| 原子写 | `save_task` 用 temp 文件 + `os.replace`，无锁读方（`scan_unclaimed_tasks`/`list_tasks`）不会读到写一半的 JSON |
+| 读容错 | `load_task` 对 PermissionError/FileNotFoundError 短重试（Windows `os.replace` 的 rename 窗口）；`list_tasks`/`scan_unclaimed_tasks` 逐文件 try/except 跳过损坏文件 |
 | Task ID 碰撞 | 使用 `uuid4` 生成，彻底消除同秒碰撞 |
 | 所有权校验 | `complete_task`/`release_task` 校验 `owner`，非持有者无法完成/释放 |
 | 协议请求锁 | `match_response`/`_teammate_submit_plan`/`run_review_plan` 加 `_requests_lock` 保护 `pending_requests` |
@@ -240,7 +280,7 @@ Lead Agent (主线程 REPL)
 | 孤儿任务释放 | Teammate 退出时 `release_task` 释放其 in_progress 任务回 pending |
 | 损坏文件容错 | `scan_unclaimed_tasks`/`list_owned_inprogress` 跳过损坏 JSON 而非崩溃 |
 
-#### 4.3 idle_poll 调度策略
+#### 6.3 idle_poll 调度策略
 
 - **随机抖动**--`sleep + random(0..2)` 防多 teammate 同步唤醒。
 - **穿透策略**--claim 失败后穿透到下一个任务，避免原地阻塞。
@@ -248,14 +288,39 @@ Lead Agent (主线程 REPL)
 - **批量关停**--shutdown 请求后仍处理同批次剩余消息。
 - **恢复 owned 任务**--idle 时优先恢复自己已认领但未完成的任务（如轮次预算耗尽后重启）。
 
-#### 4.4 Teammate 消息路由与结果提取
+#### 6.4 Teammate 消息路由与结果提取
 
 - **非协议消息上浮**--inbox 中所有非协议类型消息（result/crashed/error 等）全部上浮给 LLM。
+- **统一消息渲染 `format_inbox_msg`**--`run_check_inbox`（工具通道）与 `_drain_inbox`（自动注入通道）共用同一渲染，保留 `metadata.request_id`/`task_id` 与消息 `type`（`review_plan` 依赖）；`check_inbox` 不再截断 200 字符（inbox 原子清空后截断即永久丢数据）。
 - **结果提取**--最终结果从后往前查找最后一条 assistant 消息（`messages[-1]` 可能是 tool 消息）。
 - **全量压缩管线**--L3→L1→L2→auto 四层 + `prompt_too_long` 反应式压缩，与 Lead Agent 一致。
 - **系统提示注入**--system prompt 在压缩管线之后注入 `request_messages[0]`，避免被 `compact_history` 清除。
 
-### 5. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库
+#### 6.5 生命周期治理--finish / 自然停止 / 心跳 / 停滞检测
+
+Teammate 与 Lead 两侧共同解决"何时退出"这一多 agent 系统的经典难题：
+
+**Teammate 侧**：
+
+| 机制 | 说明 |
+|------|------|
+| **finish 工具** | 显式退出通道：`_run_finish` 立即发送 result 给 lead 并置 `_finished` 标志，主循环当轮结束后 break，**跳过 idle_poll**（否则空等 `IDLE_TIMEOUT=360s`） |
+| **自然停止启发式** | LLM 自然停（无 tool_calls）且已实际干过活（`_did_work`）且无 owned in_progress 任务时直接退出，不进 idle_poll 空等。两级例外：①有 pending plan 审批必须活着等 `review_plan`；②第一轮还没干活则落入 idle_poll 让 auto-claim 捡任务 |
+| **邮箱竞态护栏** | 退出前 `peek_inbox` 非破坏性检查--邮箱还有未消费消息（如 lead 已批准但 teammate 未读的 plan 响应）就继续活着，否则消息永久丢失 |
+| **心跳 `_heartbeat`** | 每轮结束 / idle_poll 入口 / 等审批时更新 registry 的 `last_heartbeat`/`phase`/`turns_total`（持 memory_lock），供 lead 的 `teammate_status` 区分"在干活"与"死了" |
+| **idle work 续命** | `idle_poll` 返回 "work"（lead 指令或依赖就绪通知）但软预算耗尽时，补发续命轮次（受硬上限约束）--否则无 owned 任务的 lead 指令会被静默丢弃 |
+| **工具异常隔离** | 工具 handler 异常以 `Error: {e}` 字符串回给 LLM，与 lead 对齐；不再冒泡到外层 except（那会误报 "crashed" 杀死 teammate） |
+
+**Lead 侧**：
+
+| 机制 | 说明 |
+|------|------|
+| **teammate_status 工具** | 列出全部队友的 role/status/phase/turns/距上次心跳秒数，替代反复 `check_inbox`（不消费消息） |
+| **停滞检测器** | 连续 3 轮（`STALL_MAX`）只调 polling 类工具（`check_inbox`/`teammate_status`）-> 注入停止引导；仍不理会 -> 强制 return 交还 REPL。防止 lead 在队友早已结束/崩溃时空转 |
+| **plan 审批重注入** | 每轮循环 `get_pending_plan_approvals()` 检查 pending 的 plan_approval，存在则以 `[Reminder]` user 消息重注入（原始请求可能已被消费或被压缩丢弃），lead 永不失忆；`_build_post_compact_context` 同样恢复 pending 请求列表 |
+| **Teammate Protocol 提示** | system prompt 常驻协议守则：不重复 check_inbox、结果自动送达、用 teammate_status 看活性、plan_approval_request 携带 request_id 供 review_plan |
+
+### 7. MCP 异步核心 + 同步门面——让异步 SDK 无缝融入同步代码库
 
 MCP SDK 是异步的，而 Mcode 整体是同步的。`MCPClient` 在**专用 daemon 线程**上运行独立事件循环，通过 `run_coroutine_threadsafe` 桥接，使 `ClientSession` 跨多次 `call_tool` 存活（这是逐次 `asyncio.run()` 无法实现的）：
 
@@ -272,7 +337,7 @@ def call_tool(self, name, args) -> str:
 
 工具命名采用 `mcp__{server}__{tool}` 前缀，避免与内置工具冲突且支持无歧义路由。整个子系统**全程容错**——配置缺失、JSON 损坏、连接失败、调用异常均降级为 no-op，绝不影响主程序启动。
 
-### 6. 全链路防御性编程 + 瞬时错误恢复——"不崩溃"是底线
+### 8. 全链路防御性编程 + 瞬时错误恢复——"不崩溃"是底线
 
 Mcode 在每个可能出错的地方都设置了安全网，保证 Agent 主循环不会因单点异常而崩溃。防御分为两个层面：**边界容错**（不可控输入的安全网）和**瞬时错误恢复**（LLM API 的智能重试），共同构成"不崩溃"底线：
 
@@ -288,6 +353,9 @@ Mcode 在每个可能出错的地方都设置了安全网，保证 Agent 主循�
 | **Task 竞态锁** | `claim_task`/`complete_task`/`release_task` 全部加 `_task_lock`（复用 `memory_lock`），消除 TOCTOU 竞态 | `tasks.py` |
 | **合并跨进程锁** | `.consolidate-lock` 文件锁 + `CONSOLIDATE_LOCK_STALE=600s` 过期抢占，防多 teammate 同时合并 | `memory.py` |
 | **Idle-poll 竞态** | 随机抖动防同步唤醒；claim 失败穿透到下一个任务；优先恢复已认领任务 | `bus.py` |
+| **Lead 停滞检测** | 连续 3 轮仅调 polling 工具（check_inbox/teammate_status）注入停止引导，仍不理会则强制 return | `agent.py` |
+| **Teammate 工具异常隔离** | 工具异常转 `Error: {e}` 回给 LLM，不冒泡为 "crashed" | `teammates.py` |
+| **GBK 控制台** | `_cli_writer` gb18030 + errors=replace 包装 stdout，emoji/生僻 CJK 不再炸 UnicodeEncodeError | `streaming.py` |
 | **损坏文件容错** | `scan_unclaimed_tasks` 跳过损坏的 task JSON 而非崩溃 | `tasks.py` |
 
 这种"每个边界都设防"的设计使 Agent 在面对不可控的 LLM 输出（畸形 JSON、空响应、截断流）时依然稳健。
@@ -306,7 +374,7 @@ LLM API 调用常遇 429 / 5xx / 连接错误 / 超时等瞬时错误。`streami
 - **Agent / Subagent / Teammate**：三者的 LLM 调用 `except` 分支统一调用 `classify_transient` 判断可重试性，命中则 `backoff_delay` 后重试（≤3 次），与 `prompt_too_long` 反应式压缩重试并列。
 - **SDK 自身重试**：在 mcode 重试层之下，OpenAI SDK 仍有自己的 `max_retries`，形成两层重试叠加。
 
-### 7. 路径沙箱 + 命令拦截——双重安全屏障
+### 9. 路径沙箱 + 命令拦截——双重安全屏障
 
 | 层级 | 机制 | 实现 |
 |------|------|------|
@@ -315,7 +383,7 @@ LLM API 调用常遇 429 / 5xx / 连接错误 / 超时等瞬时错误。`streami
 
 沙箱覆盖 `read_file`/`write_file`/`edit_file`/`glob`/`grep` 全部文件工具；命令拦截在工具执行**之前**触发，被拦截的命令以 `tool` 角色消息返回给 LLM 而非执行。两者共同防止 Agent 被 LLM 幻觉引导执行危险操作。
 
-### 8. 后台线程记忆系统——"边聊边学"且零阻塞
+### 10. 后台线程记忆系统——"边聊边学"且零阻塞
 
 记忆系统的全部 LLM 操作（检索/提取/合并）都在**后台 daemon 线程**执行，不阻塞主对话流：
 
@@ -362,15 +430,17 @@ threading.Thread(target=_post_turn_memory, args=(pre_compress,),
 
 **扫描节流缓存**：`list_memory_files()` 结果缓存 `MEMORY_CACHE_TTL=30s`，所有写操作（提取/合并/清理）后自动调用 `_invalidate_memory_cache()` 失效缓存，避免反复扫描磁盘。
 
-### 9. 流式响应聚合 + SDK 解耦——不绑死 pydantic
+### 11. 流式响应聚合 + SDK 解耦——不绑死 pydantic
 
 `streaming.py` 用纯 `dataclass` 模拟 OpenAI SDK 的返回对象（`StreamResponse`/`StreamChoice`/`StreamMessage`/`ToolCall`），使上层代码可统一调用 `.model_dump(exclude_none=True)` / `.choices[0].message` 等，**不依赖 SDK 的 pydantic 模型**。
 
 流式处理实时将 `delta.content` 打印到 stdout（带 `Mcode:` 前缀），同时按 `index` 聚合 `tool_call` 片段（id/name/arguments 分片到达）。流被截断时（`finish_reason=None` 但有部分 tool_calls）标记为 `interrupted`，由上层优雅处理。
 
-**瞬时错误重试**：`stream_response` 内置 `MAX_STREAM_RETRIES=3` 次重试，使用 `classify_transient` / `retry_after_seconds` / `backoff_delay` 三辅助函数实现 429 / 5xx / 连接错误的指数退避重试（详见[亮点 6](#6-全链路防御性编程--瞬时错误恢复不崩溃是底线)）。
+**GBK 控制台容错 `_cli_writer()`**：Windows 控制台（或管道）常用 GBK，流式 delta 含 emoji/生僻 CJK 时 `sys.stdout.write` 会抛 UnicodeEncodeError。模块级缓存一个包着 `stdout.buffer` 的 `TextIOWrapper`（gb18030 + `errors="replace"`，零新依赖）；wrapper 与底层 buffer 绑定校验防止 GC 关闭底层 stdout（"I/O operation on closed file"）。非 GBK 环境（含 pytest capture）原样返回 stdout。
 
-### 10. 延迟导入打破循环依赖——包加载顺序无关
+**瞬时错误重试**：`stream_response` 内置 `MAX_STREAM_RETRIES=3` 次重试，使用 `classify_transient` / `retry_after_seconds` / `backoff_delay` 三辅助函数实现 429 / 5xx / 连接错误的指数退避重试（详见[亮点 8](#8-全链路防御性编程--瞬时错误恢复不崩溃是底线)）。
+
+### 12. 延迟导入打破循环依赖——包加载顺序无关
 
 `tools.py` 依赖 `subagent`/`skills`/`bus`（上层模块），而这些模块又依赖 `tools` 的 `SUB_HANDLERS`/`SUB_TOOLS`，形成循环。Mcode 用两种模式解决：
 

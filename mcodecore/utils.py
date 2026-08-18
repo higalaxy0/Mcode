@@ -73,9 +73,17 @@ def truncate(text, limit: int = 200) -> str:
 
 
 def new_request_id() -> str:
-    """Generate a 6-digit random request id."""
-    import random
-    return f"req_{random.randint(0, 999999):06d}"
+    """Generate a globally-unique request id.
+
+    Embeds the session id plus 8 hex chars of randomness so that ids can
+    never collide across concurrently-running mcode processes (multiple
+    windows in the same folder).  A collision would make
+    ``match_response`` resolve a protocol request against the wrong
+    ``ctx.pending_requests`` entry.
+    """
+    import uuid
+    from .config import SESSION_ID
+    return f"req_{SESSION_ID}_{uuid.uuid4().hex[:8]}"
 
 
 def parse_tool_args(arguments: str | None) -> dict:

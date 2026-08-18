@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -32,17 +33,29 @@ client: OpenAI = OpenAI(api_key=API_KEY, base_url=API_BASE)
 AGENT_DIR: Path = Path(__file__).resolve().parent.parent          # points to src/
 WORKDIR: Path = Path.cwd()
 
+# Session id: unique per mcode process.  Multiple mcode windows opened in
+# the SAME folder would otherwise share one flat on-disk namespace
+# (``.mailboxes/lead.jsonl``, ``.tasks/``, ``.team_history/``) and steal
+# each other's messages (read_inbox consumes via rename) and tasks
+# (orphan sweep / claim races).  Scoping every cross-agent directory by
+# SESSION_ID makes interference structurally impossible - a team (lead +
+# teammates) always lives inside one process.  ``MCODE_SESSION_ID`` lets
+# tests (or users) pin a known session for inspection.
+SESSION_ID: str = os.getenv("MCODE_SESSION_ID") or f"s_{uuid.uuid4().hex[:8]}"
+
 MEMORY_DIR: Path = WORKDIR / ".memory"
 MEMORY_DIR.mkdir(exist_ok=True)
 MEMORY_INDEX: Path = MEMORY_DIR / "MEMORY.md"
 SKILLS_DIR: Path = AGENT_DIR / "skills"
 TRANSCRIPT_DIR: Path = WORKDIR / ".transcripts"
 TOOL_RESULTS_DIR: Path = WORKDIR / ".task_outputs" / "tool-results"
-TASKS_DIR: Path = WORKDIR / ".tasks"
-TASKS_DIR.mkdir(exist_ok=True)
+# Task board and mailboxes are session-scoped (see SESSION_ID above).
+TASKS_DIR: Path = WORKDIR / ".tasks" / SESSION_ID
+TASKS_DIR.mkdir(parents=True, exist_ok=True)
 DURABLE_PATH: Path = WORKDIR / ".scheduled_tasks.json"
-MAILBOX_DIR: Path = WORKDIR / ".mailboxes"
-MAILBOX_DIR.mkdir(exist_ok=True)
+MAILBOX_DIR: Path = WORKDIR / ".mailboxes" / SESSION_ID
+MAILBOX_DIR.mkdir(parents=True, exist_ok=True)
+TEAM_HISTORY_DIR: Path = WORKDIR / ".team_history" / SESSION_ID
 _BG_OUTPUT_DIR: Path = WORKDIR / ".task_outputs" / "bg-logs"
 
 # MCP (Model Context Protocol) server configuration file path
@@ -73,7 +86,7 @@ CONSOLIDATE_LOCK_STALE: int = 600           # 10 minutes; stale lock is stealabl
 MEMORY_CACHE_TTL: int = 30
 
 IDLE_POLL_INTERVAL: int = 5
-IDLE_TIMEOUT: int = 60
+IDLE_TIMEOUT: int = 360
 MAX_REACTIVE_RETRIES: int = 3
 
 # Teammate turn-budget controls (Fix #1 A+C):
@@ -130,3 +143,41 @@ def _enable_ansi() -> None:
             kernel32.SetConsoleMode(handle, mode.value | 0x0004)
         except Exception:
             pass
+
+
+def quarantine_legacy_mailboxes() -> int:
+    """Move legacy flat mailbox files left by pre-session-scoped versions.
+
+    Before mailboxes became session-scoped, every mcode process in the same
+    folder shared ``.mailboxes/<agent>.jsonl``; a leftover file from a
+    crashed session would otherwise be readable by the CURRENT session's
+    lead, which is precisely the cross-window message-theft bug.  Move any
+    flat ``.jsonl`` (and stale ``.reading_*`` temps) into
+    ``.mailboxes/orphan/`` instead of consuming them.  Returns the number
+    of relocated files.
+    """
+    root = WORKDIR / ".mailboxes"
+    if not root.is_dir():
+        return 0
+    moved = 0
+    for entry in root.iterdir():
+        # Session dirs (``s_xxxxxxxx``) and the orphan dir stay put.
+        if entry.is_dir():
+            continue
+        if entry.suffix != ".jsonl" and ".reading_" not in entry.name:
+            continue
+        orphan = root / "orphan"
+        orphan.mkdir(exist_ok=True)
+        target = orphan / entry.name
+        # A same-named orphan may already exist (repeated crashes); don't
+        # clobber it - suffix with a counter instead.
+        counter = 1
+        while target.exists():
+            target = orphan / f"{entry.stem}_{counter}{entry.suffix}"
+            counter += 1
+        try:
+            entry.rename(target)
+            moved += 1
+        except OSError:
+            pass  # locked by another process; leave it, it will be retried next run
+    return moved

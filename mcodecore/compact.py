@@ -520,6 +520,16 @@ def _build_post_compact_context(messages: list, budget_tokens: int = 6000) -> st
     if teammates:
         sections.append("Spawned teammates:\n" + "\n".join(teammates))
 
+    # Surface pending protocol requests so the lead can resume plan
+    # approvals after compaction (the request_id is only visible in the
+    # pre-compaction transcript otherwise).
+    pending = []
+    for rid, ps in ctx.pending_requests.items():
+        if ps.status == "pending":
+            pending.append(f"  {rid}: {ps.type} -> {ps.target} (task: {ps.task_id or 'n/a'})")
+    if pending:
+        sections.append("Pending requests:\n" + "\n".join(pending))
+
     result = "\n\n".join(sections)
     estimated = estimate_tokens_messages([{"role": "user", "content": result}])
     while sections and estimated > budget_tokens:

@@ -9,7 +9,10 @@ same-second collisions.
 from __future__ import annotations
 
 import json
+import os
+import time
 import uuid
+import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -17,10 +20,16 @@ from .config import TASKS_DIR
 from .context import ctx
 
 
-# Process-wide lock for task mutations (claim, complete).
+# Process-wide lock for task mutations (claim, complete, release).
 # This prevents the TOCTOU race where two agents load the same pending task,
 # both pass the checks, and the last writer silently overwrites the owner.
-_task_lock = ctx.memory_lock  # reuse existing lock to avoid adding new state
+#
+# NOTE: deliberately a standalone lock, NOT aliased to ``ctx.memory_lock``.
+# The memory lock is held across long LLM calls in ``_post_turn_memory``
+# (extract_memories + consolidate_memories, up to ~180 s).  If task
+# operations shared that lock, every claim/release/complete and every
+# teammate heartbeat would stall for the full duration of memory extraction.
+_task_lock = threading.Lock()
 
 
 @dataclass
@@ -55,20 +64,52 @@ def create_task(subject: str, description: str = "",
 
 
 def save_task(task: Task) -> None:
-    """Write a task to disk as JSON."""
-    _task_path(task.id).write_text(
-        json.dumps(asdict(task), indent=2, ensure_ascii=False))
+    """Write a task to disk as JSON (atomic: temp file + os.replace).
+
+    Atomic writes prevent concurrent readers (``scan_unclaimed_tasks``,
+    ``list_owned_inprogress``, ``list_tasks`` - all lock-free) from
+    observing a partial JSON file mid-write, which would raise
+    ``JSONDecodeError`` and potentially crash an idle teammate.
+    """
+    path = _task_path(task.id)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(asdict(task), indent=2, ensure_ascii=False),
+        encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def load_task(task_id: str) -> Task:
-    """Load a task from disk."""
-    return Task(**json.loads(_task_path(task_id).read_text()))
+    """Load a task from disk.
+
+    Retries briefly on PermissionError / FileNotFoundError to handle
+    concurrent atomic writes (os.replace on Windows may briefly deny
+    read access during the rename window).
+    """
+    path = _task_path(task_id)
+    last_exc = None
+    for _attempt in range(5):
+        try:
+            return Task(**json.loads(path.read_text(encoding="utf-8")))
+        except (PermissionError, FileNotFoundError) as exc:
+            last_exc = exc
+            time.sleep(0.02)
+    raise last_exc
 
 
 def list_tasks() -> list[Task]:
-    """List all tasks (sorted by filename)."""
-    return [Task(**json.loads(p.read_text()))
-            for p in sorted(TASKS_DIR.glob("task_*.json"))]
+    """List all tasks (sorted by filename).
+
+    Each file is read in a try/except so a concurrent atomic rename
+    (temp + os.replace) cannot cause a ``JSONDecodeError`` here.
+    """
+    tasks = []
+    for p in sorted(TASKS_DIR.glob("task_*.json")):
+        try:
+            tasks.append(Task(**json.loads(p.read_text(encoding="utf-8"))))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+    return tasks
 
 
 def get_task(task_id: str) -> str:
@@ -213,7 +254,40 @@ def scan_unclaimed_tasks() -> list[dict]:
         except (KeyError, TypeError):
             continue
         if (task.get("status") == "pending"
-                and not task.get("owner")
-                and can_start(tid)):
-            unclaimed.append(task)
+                and not task.get("owner")):
+            # can_start loads task files from disk; a concurrent atomic
+            # rename could briefly produce partial JSON.  Guard so one
+            # unreadable dependency doesn't crash the entire scan.
+            try:
+                ready = can_start(tid)
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                continue
+            if ready:
+                unclaimed.append(task)
     return unclaimed
+
+
+def release_orphaned_tasks(active_owners: set[str]) -> int:
+    """Release in_progress tasks whose owner is not in *active_owners*.
+
+    Called at REPL startup to clean up tasks left ``in_progress`` by
+    teammates from a previous session (daemon threads are killed on exit
+    without running their ``finally`` release).  Returns the count
+    released.  Each release is independent so one failure does not abort
+    the rest.
+    """
+    released = 0
+    for f in sorted(TASKS_DIR.glob("task_*.json")):
+        try:
+            task = json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            continue
+        if (task.get("status") == "in_progress"
+                and task.get("owner")
+                and task["owner"] not in active_owners):
+            result = release_task(task["id"], owner=task["owner"])
+            if "Released" in result:
+                released += 1
+                print(f"  \033[33m[orphan-sweep] released {task['id']} "
+                      f"(dead owner: {task['owner']})\033[0m")
+    return released
